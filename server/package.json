@@ -1,0 +1,25 @@
+{
+  "name": "paper-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@colyseus/core": "0.18.10",
+    "@colyseus/schema": "5.0.25"
+  },
+  "devDependencies": {
+    "@colyseus/tools": "0.18.3",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.13.0",
+    "express": "^4.21.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

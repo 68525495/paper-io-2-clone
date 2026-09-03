@@ -1,0 +1,24 @@
+{
+  "name": "paper-io-3d",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "prebuild": "pnpm --dir server install --prod=false --no-frozen-lockfile && pnpm --dir server test && pnpm --dir server typecheck && pnpm run typecheck",
+    "build": "LP_RUNTIME_MODE=external vite build && pnpm --dir server build",
+    "typecheck": "tsc --noEmit",
+    "dev": "vite",
+    "dev:server": "pnpm --dir server dev",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^7.54.0",
+    "@babylonjs/gui": "^7.54.0",
+    "@colyseus/schema": "5.0.25",
+    "@colyseus/sdk": "0.18.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0"
+  }
+}

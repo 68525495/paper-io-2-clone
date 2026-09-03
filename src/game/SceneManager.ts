@@ -1,0 +1,119 @@
+import {
+  ArcRotateCamera,
+  Color4,
+  DirectionalLight,
+  Engine,
+  HemisphericLight,
+  Scene,
+  Vector3,
+} from "@babylonjs/core";
+
+export class SceneManager {
+  public engine: Engine;
+  public scene: Scene;
+  public camera: ArcRotateCamera;
+  public dirLight: DirectionalLight;
+  public hemiLight: HemisphericLight;
+
+  private targetPosition: Vector3 = new Vector3(0, 0, 0);
+
+  constructor(canvas: HTMLCanvasElement) {
+    this.engine = new Engine(canvas, true, {
+      preserveDrawingBuffer: true,
+      stencil: true,
+      antialias: true,
+    });
+
+    this.scene = new Scene(this.engine);
+    // Background ocean water color matching screenshot
+    this.scene.clearColor = new Color4(0.55, 0.88, 0.82, 1.0); // #8de0d1
+
+    // Camera: Fixed top-down tilted 3D perspective
+    // alpha = -Math.PI / 2, beta = 0.52 rad (~30 deg from vertical), radius = 42
+    // Compute radius: wider for landscape, taller for portrait
+    const aspect = window.innerWidth / window.innerHeight;
+    const baseRadius = aspect < 1 ? 52 : 42; // pull camera back on portrait
+
+    this.camera = new ArcRotateCamera(
+      "MainCamera",
+      -Math.PI / 2,
+      0.54,
+      baseRadius,
+      new Vector3(0, 0, 0),
+      this.scene
+    );
+    // Lock camera – no user rotation/zoom/pan
+    this.camera.lowerBetaLimit = 0.54;
+    this.camera.upperBetaLimit = 0.54;
+    this.camera.lowerRadiusLimit = baseRadius;
+    this.camera.upperRadiusLimit = baseRadius;
+    this.camera.lowerAlphaLimit = -Math.PI / 2;
+    this.camera.upperAlphaLimit = -Math.PI / 2;
+    this.camera.fov = 0.78; // ~45 deg FOV
+    // Detach user input so touch/mouse doesn't rotate camera
+    this.camera.detachControl();
+
+    // Soft ambient hemispheric lighting
+    this.hemiLight = new HemisphericLight(
+      "HemiLight",
+      new Vector3(0, 1, 0),
+      this.scene
+    );
+    this.hemiLight.intensity = 0.65;
+    this.hemiLight.diffuse.set(1, 1, 1);
+    this.hemiLight.groundColor.set(0.8, 0.9, 0.88);
+
+    // Directional light for clean 3D character shading
+    this.dirLight = new DirectionalLight(
+      "DirLight",
+      new Vector3(-0.5, -1, -0.4).normalize(),
+      this.scene
+    );
+    this.dirLight.intensity = 0.20;
+    this.dirLight.diffuse.set(1, 1, 1);
+
+    // Window resize handler – also adapt camera radius
+    window.addEventListener("resize", () => {
+      this.engine.resize();
+      const newAspect = window.innerWidth / window.innerHeight;
+      const newRadius = newAspect < 1 ? 52 : 42;
+      this.camera.radius = newRadius;
+      this.camera.lowerRadiusLimit = newRadius;
+      this.camera.upperRadiusLimit = newRadius;
+    });
+  }
+
+  setCameraTarget(x: number, z: number, smooth: boolean = true) {
+    if (smooth) {
+      // Smooth lerp camera target
+      this.targetPosition.x += (x - this.targetPosition.x) * 0.12;
+      this.targetPosition.z += (z - this.targetPosition.z) * 0.12;
+    } else {
+      this.targetPosition.x = x;
+      this.targetPosition.z = z;
+    }
+    this.camera.target.copyFrom(this.targetPosition);
+  }
+
+  startRenderLoop(onUpdate: (deltaTime: number) => void) {
+    let frameCount = 0;
+    this.engine.runRenderLoop(() => {
+      const dt = this.engine.getDeltaTime() / 1000;
+      try {
+        onUpdate(dt);
+      } catch (err) {
+        console.error("[SceneManager] render loop error:", err);
+      }
+      this.scene.render();
+      frameCount++;
+      if (frameCount % 300 === 0) {
+        console.log(`[SceneManager] frame ${frameCount}`);
+      }
+    });
+  }
+
+  destroy() {
+    this.scene.dispose();
+    this.engine.dispose();
+  }
+}

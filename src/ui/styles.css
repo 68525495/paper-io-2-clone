@@ -1,0 +1,461 @@
+@import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Outfit:wght@600;700;800&display=swap');
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: #8de0d1;
+  font-family: 'Outfit', 'Fredoka', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  position: fixed;
+  top: 0;
+  left: 0;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* =========================================
+   START SCREEN  (portrait-first, Paper.io style)
+   ========================================= */
+#start-screen {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: linear-gradient(160deg, #a8edea 0%, #fed6e3 50%, #d5e8ff 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.start-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 20px;
+  width: 100%;
+  max-width: 340px;
+}
+
+.start-logo {
+  text-align: center;
+  margin-bottom: 12px;
+}
+
+.start-logo-text {
+  font-family: 'Fredoka', cursive, sans-serif;
+  font-size: 56px;
+  font-weight: 700;
+  color: #ffffff;
+  text-shadow:
+    0 4px 0 #6350E5,
+    0 6px 12px rgba(99, 80, 229, 0.3),
+    -3px -3px 0 #6350E5,
+     3px -3px 0 #6350E5,
+    -3px  3px 0 #6350E5,
+     3px  3px 0 #6350E5;
+  line-height: 1;
+}
+
+.start-logo-sub {
+  font-family: 'Fredoka', cursive, sans-serif;
+  font-size: 32px;
+  font-weight: 700;
+  color: #FFD93D;
+  text-shadow:
+    0 3px 0 #E6A817,
+    0 4px 8px rgba(230, 168, 23, 0.3),
+    -2px -2px 0 #E6A817,
+     2px -2px 0 #E6A817,
+    -2px  2px 0 #E6A817,
+     2px  2px 0 #E6A817;
+  margin-top: -4px;
+}
+
+.start-name-row {
+  width: 100%;
+}
+
+.start-name-input {
+  width: 100%;
+  padding: 14px 18px;
+  font-size: 18px;
+  font-weight: 700;
+  font-family: 'Outfit', sans-serif;
+  text-align: center;
+  border: 3px solid rgba(255, 255, 255, 0.7);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(10px);
+  color: #2D3748;
+  outline: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  transition: border-color 0.2s;
+}
+
+.start-name-input:focus {
+  border-color: #6350E5;
+}
+
+.start-name-input::placeholder {
+  color: #A0AEC0;
+  font-weight: 600;
+}
+
+.start-play-btn {
+  width: 100%;
+  padding: 16px;
+  font-size: 22px;
+  font-weight: 800;
+  font-family: 'Outfit', sans-serif;
+  color: #ffffff;
+  background: linear-gradient(135deg, #6350E5 0%, #8B5CF6 100%);
+  border: none;
+  border-radius: 20px;
+  cursor: pointer;
+  box-shadow:
+    0 6px 0 #4C3ABA,
+    0 8px 20px rgba(99, 80, 229, 0.35);
+  transition: transform 0.1s, box-shadow 0.1s;
+  letter-spacing: 1px;
+}
+
+.start-play-btn:active {
+  transform: translateY(4px);
+  box-shadow:
+    0 2px 0 #4C3ABA,
+    0 3px 8px rgba(99, 80, 229, 0.35);
+}
+
+.start-hint {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(45, 55, 72, 0.5);
+  text-align: center;
+}
+
+/* =========================================
+   GAME SCREEN
+   ========================================= */
+#game-screen {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+}
+
+#renderCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  outline: none;
+}
+
+#ui-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 20;
+}
+
+/* Joystick overlay zone covers the entire screen */
+#joystick-zone {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 15;
+  touch-action: none;
+}
+
+/* Virtual Joystick visual */
+.joystick-base {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+  border: 3px solid rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  display: none;
+  z-index: 16;
+}
+
+.joystick-knob {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.6);
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  top: 50%;
+  left: 50%;
+  z-index: 17;
+}
+
+/* =========================================
+   HUD: Top-Left Stats
+   ========================================= */
+.top-left-stats {
+  position: absolute;
+  top: max(calc(env(safe-area-inset-top, 0px) + 10px), 12px);
+  left: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stat-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(8px);
+  padding: 3px 10px 3px 4px;
+  border-radius: 20px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+  border: 1.5px solid rgba(255, 255, 255, 0.6);
+  min-width: 60px;
+}
+
+.stat-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+
+.skull-icon {
+  background: #EAF3FD;
+}
+
+.coin-icon-gold {
+  background: #FEF6D9;
+}
+
+.stat-value {
+  color: #294060;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+}
+
+/* =========================================
+   HUD: Top-Right Leaderboard
+   ========================================= */
+.top-right-leaderboard {
+  position: absolute;
+  top: max(calc(env(safe-area-inset-top, 0px) + 10px), 12px);
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.leaderboard-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 4px;
+  border-radius: 18px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.09);
+  min-width: 85px;
+  backdrop-filter: blur(6px);
+}
+
+.rank-1 {
+  background: linear-gradient(90deg, rgba(235, 246, 255, 0.95), rgba(215, 237, 255, 0.95));
+  border: 1.5px solid #45B3F8;
+}
+
+.rank-2 {
+  background: linear-gradient(90deg, rgba(255, 242, 235, 0.95), rgba(248, 226, 215, 0.95));
+  border: 1.5px solid #F8A576;
+}
+
+.rank-3 {
+  background: linear-gradient(90deg, rgba(255, 252, 235, 0.95), rgba(250, 243, 210, 0.95));
+  border: 1.5px solid #F5D562;
+}
+
+.lb-rank-badge {
+  font-size: 12px;
+}
+
+.lb-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.12);
+}
+
+.avatar-emoji {
+  font-size: 13px;
+}
+
+.lb-percent {
+  color: #27405A;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+/* =========================================
+   HUD: Minimap (bottom-left)
+   ========================================= */
+.bottom-left-minimap-box {
+  position: absolute;
+  bottom: max(env(safe-area-inset-bottom, 0px), 10px);
+  left: 10px;
+}
+
+.minimap-canvas {
+  width: 80px;
+  height: 80px;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.12));
+}
+
+/* =========================================
+   Floating Score Popups
+   ========================================= */
+.floating-score-popup {
+  position: absolute;
+  pointer-events: none;
+  font-family: 'Fredoka', cursive, sans-serif;
+  font-size: 22px;
+  font-weight: 800;
+  text-shadow:
+    -2px -2px 0 #2A3B5C,
+     2px -2px 0 #2A3B5C,
+    -2px  2px 0 #2A3B5C,
+     2px  2px 0 #2A3B5C,
+     0px  3px 6px rgba(0,0,0,0.4);
+  z-index: 60;
+  transform-origin: center center;
+}
+
+/* =========================================
+   Death / Respawn Overlay
+   ========================================= */
+.death-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(15, 25, 35, 0.55);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  z-index: 100;
+  transition: opacity 0.3s;
+}
+
+.death-overlay.hidden {
+  display: none;
+}
+
+.death-card {
+  background: #FFFFFF;
+  border-radius: 24px;
+  padding: 24px 28px;
+  text-align: center;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.25);
+  max-width: 300px;
+  width: 88%;
+  animation: popIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes popIn {
+  from { transform: scale(0.7); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.death-title {
+  color: #EF4444;
+  font-size: 26px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+
+.death-reason {
+  color: #64748B;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.death-stats {
+  background: #F8FAFC;
+  border-radius: 14px;
+  padding: 12px;
+  margin-bottom: 18px;
+}
+
+.death-stat-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 14px;
+  color: #334155;
+}
+
+.death-stat-row:last-child {
+  margin-bottom: 0;
+}
+
+.respawn-button {
+  width: 100%;
+  background: linear-gradient(135deg, #10B981, #059669);
+  color: #ffffff;
+  border: none;
+  padding: 14px;
+  border-radius: 16px;
+  font-size: 17px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.4);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.respawn-button:active {
+  transform: scale(0.97);
+}
+
+/* =========================================
+   Landscape tweaks on small screens
+   ========================================= */
+@media (min-aspect-ratio: 4/3) {
+  .top-milestone-bar-container {
+    max-width: 380px;
+    top: 10px;
+  }
+  .minimap-canvas {
+    width: 110px;
+    height: 110px;
+  }
+}

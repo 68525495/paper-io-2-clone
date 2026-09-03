@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="description" content="Paper.io 3D Multiplayer Game with Babylon.js and Colyseus" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>Paper.io 3D</title>
+  <link rel="stylesheet" href="/src/ui/styles.css" />
+</head>
+<body>
+  <!-- Start Screen -->
+  <div id="start-screen">
+    <div class="start-content">
+      <div class="start-logo">
+        <div class="start-logo-text">Paper.io</div>
+        <div class="start-logo-sub">3D</div>
+      </div>
+      <div class="start-name-row">
+        <input
+          type="text"
+          id="player-name-input"
+          class="start-name-input"
+          placeholder="Your name"
+          maxlength="14"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+        />
+      </div>
+      <button id="play-btn" class="start-play-btn">PLAY!</button>
+      <div class="start-hint">Swipe to steer · Capture territory</div>
+    </div>
+  </div>
+
+  <!-- Game Screen (hidden initially) -->
+  <div id="game-screen" class="hidden">
+    <canvas id="renderCanvas"></canvas>
+    <div id="ui-layer"></div>
+    <div id="joystick-zone"></div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
