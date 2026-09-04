@@ -4,7 +4,8 @@ import {
   HALF_ARENA_SIZE,
   INITIAL_BASE_RADIUS_CELLS,
 } from "./constants.js";
-import { clamp, worldToGrid } from "./geometry.js";
+import { isPointInsideArena } from "./arenaShape.js";
+import { clamp, gridToWorld, worldToGrid } from "./geometry.js";
 
 export interface TerritoryCaptureResult {
   capturedCount: number;
@@ -14,6 +15,12 @@ export interface TerritoryCaptureResult {
   trappedPlayerIds: string[];
 }
 
+export interface OwnedBoundaryPoint {
+  x: number;
+  y: number;
+  distance: number;
+}
+
 export class TerritoryGrid {
   readonly width: number = GRID_CELLS;
   readonly height: number = GRID_CELLS;
@@ -21,6 +28,9 @@ export class TerritoryGrid {
 
   /** Grid storing player indices: 0 = neutral, 1..255 = playerIndex */
   readonly cells: Uint8Array;
+  /** 1 for cells whose center is inside the organic island boundary. */
+  readonly playableMask: Uint8Array;
+  readonly playableCellCount: number;
 
   /** Map player ID (string) to numeric player index (1..255) */
   private playerIndices = new Map<string, number>();
@@ -29,6 +39,18 @@ export class TerritoryGrid {
 
   constructor() {
     this.cells = new Uint8Array(this.totalCells);
+    this.playableMask = new Uint8Array(this.totalCells);
+
+    let playableCellCount = 0;
+    for (let gy = 0; gy < this.height; gy++) {
+      for (let gx = 0; gx < this.width; gx++) {
+        const point = gridToWorld(gx, gy);
+        if (!isPointInsideArena(point.x, point.y)) continue;
+        this.playableMask[gy * this.width + gx] = 1;
+        playableCellCount++;
+      }
+    }
+    this.playableCellCount = playableCellCount;
   }
 
   registerPlayer(playerId: string): number {
@@ -71,16 +93,219 @@ export class TerritoryGrid {
     return this.cells[gy * this.width + gx];
   }
 
+  isPlayableCell(gx: number, gy: number): boolean {
+    if (gx < 0 || gx >= this.width || gy < 0 || gy >= this.height) {
+      return false;
+    }
+    return this.playableMask[gy * this.width + gx] === 1;
+  }
+
   setCell(gx: number, gy: number, val: number) {
     if (gx < 0 || gx >= this.width || gy < 0 || gy >= this.height) return;
+    if (!this.isPlayableCell(gx, gy)) return;
     this.cells[gy * this.width + gx] = val;
   }
 
   isOwnTerritory(playerId: string, worldX: number, worldY: number): boolean {
     const idx = this.playerIndices.get(playerId);
-    if (!idx) return false;
+    if (!idx || !isPointInsideArena(worldX, worldY)) return false;
     const { gx, gy } = worldToGrid(worldX, worldY);
-    return this.getCell(gx, gy) === idx;
+    return this.isPlayableCell(gx, gy) && this.getCell(gx, gy) === idx;
+  }
+
+  /**
+   * Find the owned boundary cell whose center is closest to a world position.
+   * A boundary cell has at least one 4-connected neighbor that is outside the
+   * grid or not owned by the player. This query never changes cell ownership.
+   */
+  findNearestOwnedBoundary(
+    playerId: string,
+    worldX: number,
+    worldY: number,
+    maxWorldDistance?: number
+  ): OwnedBoundaryPoint | null {
+    const playerIdx = this.playerIndices.get(playerId);
+    if (!playerIdx || !Number.isFinite(worldX) || !Number.isFinite(worldY)) {
+      return null;
+    }
+    if (
+      maxWorldDistance !== undefined &&
+      (Number.isNaN(maxWorldDistance) || maxWorldDistance < 0)
+    ) {
+      return null;
+    }
+
+    const maxDistanceSq =
+      maxWorldDistance === undefined || maxWorldDistance === Infinity
+        ? Infinity
+        : maxWorldDistance * maxWorldDistance;
+    const hasFiniteDistanceLimit = Number.isFinite(maxWorldDistance);
+    let searchMinX = 0;
+    let searchMaxX = this.width - 1;
+    let searchMinY = 0;
+    let searchMaxY = this.height - 1;
+
+    if (hasFiniteDistanceLimit) {
+      const maxDistance = maxWorldDistance!;
+      const rawMinX = Math.ceil(
+        (worldX - maxDistance + HALF_ARENA_SIZE) / CELL_SIZE - 0.5
+      );
+      const rawMaxX = Math.floor(
+        (worldX + maxDistance + HALF_ARENA_SIZE) / CELL_SIZE - 0.5
+      );
+      const rawMinY = Math.ceil(
+        (worldY - maxDistance + HALF_ARENA_SIZE) / CELL_SIZE - 0.5
+      );
+      const rawMaxY = Math.floor(
+        (worldY + maxDistance + HALF_ARENA_SIZE) / CELL_SIZE - 0.5
+      );
+
+      if (
+        rawMaxX < 0 ||
+        rawMinX >= this.width ||
+        rawMaxY < 0 ||
+        rawMinY >= this.height ||
+        rawMinX > rawMaxX ||
+        rawMinY > rawMaxY
+      ) {
+        return null;
+      }
+
+      searchMinX = clamp(rawMinX, 0, this.width - 1);
+      searchMaxX = clamp(rawMaxX, 0, this.width - 1);
+      searchMinY = clamp(rawMinY, 0, this.height - 1);
+      searchMaxY = clamp(rawMaxY, 0, this.height - 1);
+    }
+
+    const origin = worldToGrid(worldX, worldY);
+    const maxRing = Math.max(
+      origin.gx - searchMinX,
+      searchMaxX - origin.gx,
+      origin.gy - searchMinY,
+      searchMaxY - origin.gy
+    );
+    let bestGridX = -1;
+    let bestGridY = -1;
+    let bestDistanceSq = maxDistanceSq;
+
+    const considerCell = (gx: number, gy: number) => {
+      const point = gridToWorld(gx, gy);
+      const dx = point.x - worldX;
+      const dy = point.y - worldY;
+      const distanceSq = dx * dx + dy * dy;
+      if (distanceSq > bestDistanceSq) return;
+
+      const rowOffset = gy * this.width;
+      const cellIndex = rowOffset + gx;
+      if (this.cells[cellIndex] !== playerIdx) return;
+
+      const isBoundary =
+        gx === 0 ||
+        gx === this.width - 1 ||
+        gy === 0 ||
+        gy === this.height - 1 ||
+        this.cells[cellIndex - 1] !== playerIdx ||
+        this.cells[cellIndex + 1] !== playerIdx ||
+        this.cells[cellIndex - this.width] !== playerIdx ||
+        this.cells[cellIndex + this.width] !== playerIdx;
+      if (!isBoundary) return;
+      if (bestGridX !== -1 && distanceSq === bestDistanceSq) return;
+
+      bestGridX = gx;
+      bestGridY = gy;
+      bestDistanceSq = distanceSq;
+    };
+
+    for (let ring = 0; ring <= maxRing; ring++) {
+      const ringMinX = origin.gx - ring;
+      const ringMaxX = origin.gx + ring;
+      const ringMinY = origin.gy - ring;
+      const ringMaxY = origin.gy + ring;
+      const minX = Math.max(searchMinX, ringMinX);
+      const maxX = Math.min(searchMaxX, ringMaxX);
+
+      if (ring === 0) {
+        if (
+          origin.gx >= searchMinX &&
+          origin.gx <= searchMaxX &&
+          origin.gy >= searchMinY &&
+          origin.gy <= searchMaxY
+        ) {
+          considerCell(origin.gx, origin.gy);
+        }
+      } else {
+        if (ringMinY >= searchMinY && ringMinY <= searchMaxY) {
+          for (let gx = minX; gx <= maxX; gx++) considerCell(gx, ringMinY);
+        }
+        if (
+          ringMaxY !== ringMinY &&
+          ringMaxY >= searchMinY &&
+          ringMaxY <= searchMaxY
+        ) {
+          for (let gx = minX; gx <= maxX; gx++) considerCell(gx, ringMaxY);
+        }
+
+        const minY = Math.max(searchMinY, ringMinY + 1);
+        const maxY = Math.min(searchMaxY, ringMaxY - 1);
+        if (ringMinX >= searchMinX && ringMinX <= searchMaxX) {
+          for (let gy = minY; gy <= maxY; gy++) considerCell(ringMinX, gy);
+        }
+        if (
+          ringMaxX !== ringMinX &&
+          ringMaxX >= searchMinX &&
+          ringMaxX <= searchMaxX
+        ) {
+          for (let gy = minY; gy <= maxY; gy++) considerCell(ringMaxX, gy);
+        }
+      }
+
+      if (bestGridX !== -1) {
+        const scannedMinX = Math.max(searchMinX, ringMinX);
+        const scannedMaxX = Math.min(searchMaxX, ringMaxX);
+        const scannedMinY = Math.max(searchMinY, ringMinY);
+        const scannedMaxY = Math.min(searchMaxY, ringMaxY);
+        let unscannedDistanceLowerBound = Infinity;
+
+        if (scannedMinX > searchMinX) {
+          const nextX = gridToWorld(scannedMinX - 1, origin.gy).x;
+          unscannedDistanceLowerBound = Math.min(
+            unscannedDistanceLowerBound,
+            Math.abs(nextX - worldX)
+          );
+        }
+        if (scannedMaxX < searchMaxX) {
+          const nextX = gridToWorld(scannedMaxX + 1, origin.gy).x;
+          unscannedDistanceLowerBound = Math.min(
+            unscannedDistanceLowerBound,
+            Math.abs(nextX - worldX)
+          );
+        }
+        if (scannedMinY > searchMinY) {
+          const nextY = gridToWorld(origin.gx, scannedMinY - 1).y;
+          unscannedDistanceLowerBound = Math.min(
+            unscannedDistanceLowerBound,
+            Math.abs(nextY - worldY)
+          );
+        }
+        if (scannedMaxY < searchMaxY) {
+          const nextY = gridToWorld(origin.gx, scannedMaxY + 1).y;
+          unscannedDistanceLowerBound = Math.min(
+            unscannedDistanceLowerBound,
+            Math.abs(nextY - worldY)
+          );
+        }
+
+        if (bestDistanceSq <= unscannedDistanceLowerBound ** 2) break;
+      }
+    }
+
+    if (bestGridX === -1) return null;
+    const point = gridToWorld(bestGridX, bestGridY);
+    return {
+      x: point.x,
+      y: point.y,
+      distance: Math.sqrt(bestDistanceSq),
+    };
   }
 
   /** Spawn circular initial base */
@@ -93,8 +318,9 @@ export class TerritoryGrid {
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
         if (dx * dx + dy * dy <= r * r + 1) {
-          const cx = clamp(gx + dx, 0, this.width - 1);
-          const cy = clamp(gy + dy, 0, this.height - 1);
+          const cx = gx + dx;
+          const cy = gy + dy;
+          if (!this.isPlayableCell(cx, cy)) continue;
           this.setCell(cx, cy, idx);
           count++;
         }
@@ -143,13 +369,13 @@ export class TerritoryGrid {
 
   getTerritoryPercent(playerId: string): number {
     const count = this.countTerritoryCells(playerId);
-    return Number(((count / this.totalCells) * 100).toFixed(2));
+    return Number(((count / this.playableCellCount) * 100).toFixed(2));
   }
 
   countNeutralCells(): number {
     let count = 0;
     for (let i = 0; i < this.totalCells; i++) {
-      if (this.cells[i] === 0) count++;
+      if (this.playableMask[i] === 1 && this.cells[i] === 0) count++;
     }
     return count;
   }
@@ -190,7 +416,8 @@ export class TerritoryGrid {
     // Also mark individual trail points to ensure coverage
     for (const pt of trail) {
       const g = worldToGrid(pt.x, pt.y);
-      trailMask[g.gy * this.width + g.gx] = 1;
+      const gridIdx = g.gy * this.width + g.gx;
+      if (this.playableMask[gridIdx] === 1) trailMask[gridIdx] = 1;
     }
 
     // Padded BFS: grid dimensions +2 for virtual boundary padding
@@ -235,7 +462,9 @@ export class TerritoryGrid {
 
         if (gx >= 0 && gx < this.width && gy >= 0 && gy < this.height) {
           const gridIdx = gy * this.width + gx;
-          const isBarrier = this.cells[gridIdx] === playerIdx || trailMask[gridIdx] === 1;
+          const isBarrier =
+            this.playableMask[gridIdx] === 1 &&
+            (this.cells[gridIdx] === playerIdx || trailMask[gridIdx] === 1);
           if (isBarrier) {
             // Do not cross barrier
             continue;
@@ -244,6 +473,23 @@ export class TerritoryGrid {
 
         visited[nIdx] = 1;
         queue[tail++] = nIdx;
+      }
+    }
+
+    // Existing territory is unvisited because it is a BFS barrier, but it is
+    // not part of the newly enclosed area. Evaluate positions before the fill
+    // below overwrites captured ownership.
+    const trappedPlayerIds: string[] = [];
+    for (const [otherId, pos] of otherPlayerPositions) {
+      if (otherId === playerId) continue;
+      if (!isPointInsideArena(pos.x, pos.y)) continue;
+      const g = worldToGrid(pos.x, pos.y);
+      const gridIdx = g.gy * this.width + g.gx;
+      if (this.playableMask[gridIdx] !== 1) continue;
+      const pIdx = (g.gy + 1) * pWidth + (g.gx + 1);
+      const wasOwnedBeforeCapture = this.cells[gridIdx] === playerIdx;
+      if (!wasOwnedBeforeCapture && visited[pIdx] === 0) {
+        trappedPlayerIds.push(otherId);
       }
     }
 
@@ -256,6 +502,7 @@ export class TerritoryGrid {
       for (let gx = 0; gx < this.width; gx++) {
         const pIdx = (gy + 1) * pWidth + (gx + 1);
         const gridIdx = gy * this.width + gx;
+        if (this.playableMask[gridIdx] !== 1) continue;
         const isTrail = trailMask[gridIdx] === 1;
         const isEnclosed = visited[pIdx] === 0;
 
@@ -267,18 +514,6 @@ export class TerritoryGrid {
             sumY += (gy + 0.5) * CELL_SIZE - HALF_ARENA_SIZE;
           }
         }
-      }
-    }
-
-    // Check if any other player was trapped inside or their territory was engulfed
-    const trappedPlayerIds: string[] = [];
-    for (const [otherId, pos] of otherPlayerPositions) {
-      if (otherId === playerId) continue;
-      const g = worldToGrid(pos.x, pos.y);
-      const pIdx = (g.gy + 1) * pWidth + (g.gx + 1);
-      if (visited[pIdx] === 0) {
-        // Player body was inside the enclosed region!
-        trappedPlayerIds.push(otherId);
       }
     }
 
@@ -305,7 +540,9 @@ export class TerritoryGrid {
     });
 
     const totalCellsOwned = this.countTerritoryCells(playerId);
-    const newPercent = Number(((totalCellsOwned / this.totalCells) * 100).toFixed(2));
+    const newPercent = Number(
+      ((totalCellsOwned / this.playableCellCount) * 100).toFixed(2)
+    );
     const centerX = capturedCount > 0 ? sumX / capturedCount : 0;
     const centerY = capturedCount > 0 ? sumY / capturedCount : 0;
 
@@ -331,7 +568,8 @@ export class TerritoryGrid {
 
     while (true) {
       if (x >= 0 && x < this.width && y >= 0 && y < this.height) {
-        mask[y * this.width + x] = 1;
+        const index = y * this.width + x;
+        if (this.playableMask[index] === 1) mask[index] = 1;
       }
       if (x === x1 && y === y1) break;
       let e2 = 2 * err;

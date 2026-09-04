@@ -1,7 +1,7 @@
 export const ARENA_SIZE = 160;
 export const HALF_ARENA_SIZE = ARENA_SIZE / 2;
-export const GRID_CELLS = 120;
-export const CELL_SIZE = ARENA_SIZE / GRID_CELLS; // ~1.333 world units per cell
+export const GRID_CELLS = 256;
+export const CELL_SIZE = ARENA_SIZE / GRID_CELLS; // 0.625 world units per cell
 
 export const PLAYER_SPEED = 14.0;
 export const PLAYER_BOOST_SPEED = 20.0;
@@ -11,7 +11,11 @@ export const TRAIL_RADIUS = 0.45;
 export const TRAIL_MIN_SEGMENT_DIST = 0.55;
 export const TRAIL_SELF_HIT_SAFE_SEGMENTS = 5; // Do not collide with recent 5 trail vertices
 
-export const INITIAL_BASE_RADIUS_CELLS = 4; // Spawn disc radius ~4 cells (~49 cells total)
+export const INITIAL_BASE_RADIUS_CELLS = 9; // Preserves the previous ~5.3 world-unit spawn radius
+export const INITIAL_BASE_COUNT = 261;
+
+// Keep territory scoring comparable to the original 120x120 grid.
+export const TERRITORY_SCORE_PER_CELL = 5 * (120 / GRID_CELLS) ** 2;
 
 export const COLOR_PALETTE = [
   "#00D2FF", // 1. Electric Cyan (Fresh bright cyan)

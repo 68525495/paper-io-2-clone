@@ -159,9 +159,12 @@ export class GameClient {
 
   disconnect() {
     if (this.pingInterval) clearInterval(this.pingInterval);
+    this.pingInterval = null;
     if (this.room) {
       this.room.leave();
       this.room = null;
     }
+    this.trailData = {};
+    this.localSessionId = "";
   }
 }

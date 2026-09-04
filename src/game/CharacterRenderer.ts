@@ -24,6 +24,7 @@ export class CharacterRenderer {
   private scene: Scene;
   private characters = new Map<string, CharacterInstance>();
   private goldMaterial: StandardMaterial;
+  private shadowMaterial: StandardMaterial;
 
   constructor(scene: Scene) {
     this.scene = scene;
@@ -32,6 +33,12 @@ export class CharacterRenderer {
     this.goldMaterial.diffuseColor = new Color3(1.0, 0.82, 0.2);
     this.goldMaterial.emissiveColor = new Color3(0.4, 0.3, 0.05);
     this.goldMaterial.specularColor = new Color3(1, 0.9, 0.5);
+
+    this.shadowMaterial = new StandardMaterial("CharacterBlobShadowMat", scene);
+    this.shadowMaterial.diffuseColor = new Color3(0.06, 0.08, 0.1);
+    this.shadowMaterial.emissiveColor = new Color3(0.02, 0.025, 0.03);
+    this.shadowMaterial.alpha = 0.18;
+    this.shadowMaterial.disableLighting = true;
   }
 
   getOrCreate(playerId: string, name: string, color: string, isBot: boolean): CharacterInstance {
@@ -52,6 +59,9 @@ export class CharacterRenderer {
       this.scene
     );
     bodyMesh.position.y = 0.75;
+    // Present the face toward the overhead camera while the root still turns
+    // on Y to communicate movement direction.
+    bodyMesh.rotation.x = -0.22;
     bodyMesh.parent = root;
 
     const bodyMat = new StandardMaterial(`bodyMat_${playerId}`, this.scene);
@@ -59,6 +69,17 @@ export class CharacterRenderer {
     bodyMat.emissiveColor = Color3.FromHexString(color).scale(0.15);
     bodyMat.specularColor = new Color3(0, 0, 0);
     bodyMesh.material = bodyMat;
+
+    // A soft, flattened contact shadow carries depth in the top-down view.
+    const blobShadow = MeshBuilder.CreateCylinder(
+      `shadow_${playerId}`,
+      { diameter: 2.25, height: 0.025, tessellation: 32 },
+      this.scene
+    );
+    blobShadow.position.set(0.12, 0.025, -0.12);
+    blobShadow.scaling.z = 0.78;
+    blobShadow.parent = root;
+    blobShadow.material = this.shadowMaterial;
 
     // 2. Ears
     const earL = MeshBuilder.CreateBox(`earL_${playerId}`, { width: 0.35, height: 0.45, depth: 0.35 }, this.scene);
@@ -175,8 +196,11 @@ export class CharacterRenderer {
       char.root.position.x = x;
       char.root.position.z = z;
     } else {
-      char.root.position.x += (x - char.root.position.x) * 0.4;
-      char.root.position.z += (z - char.root.position.z) * 0.4;
+      // Match the old 60 fps response while keeping interpolation consistent
+      // on 30/60/120 Hz displays.
+      const positionBlend = 1 - Math.exp(-30.65 * Math.min(dt, 0.1));
+      char.root.position.x += (x - char.root.position.x) * positionBlend;
+      char.root.position.z += (z - char.root.position.z) * positionBlend;
     }
 
     // Rotate character towards heading angle
@@ -203,6 +227,11 @@ export class CharacterRenderer {
 
   }
 
+  /** The same interpolated pose used to render the character this frame. */
+  getRenderedPosition(playerId: string): Vector3 | null {
+    return this.characters.get(playerId)?.root.position ?? null;
+  }
+
   cleanupRemoved(activePlayers: { has(id: string): boolean }) {
     const toRemove: string[] = [];
     this.characters.forEach((_, id) => {
@@ -221,5 +250,12 @@ export class CharacterRenderer {
       char.root.dispose();
       this.characters.delete(playerId);
     }
+  }
+
+  removeAll() {
+    this.characters.forEach((char) => {
+      char.root.dispose();
+    });
+    this.characters.clear();
   }
 }

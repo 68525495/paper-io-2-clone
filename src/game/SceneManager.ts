@@ -28,23 +28,24 @@ export class SceneManager {
     // Background ocean water color matching screenshot
     this.scene.clearColor = new Color4(0.55, 0.88, 0.82, 1.0); // #8de0d1
 
-    // Camera: Fixed top-down tilted 3D perspective
-    // alpha = -Math.PI / 2, beta = 0.52 rad (~30 deg from vertical), radius = 42
-    // Compute radius: wider for landscape, taller for portrait
+    // Effectively orthogonal to the ground. ArcRotateCamera needs a tiny
+    // non-zero beta to avoid its polar singularity, but 0.01 is visually a
+    // true top-down view and keeps circles circular on screen.
     const aspect = window.innerWidth / window.innerHeight;
     const baseRadius = aspect < 1 ? 52 : 42; // pull camera back on portrait
+    const cameraBeta = 0.01;
 
     this.camera = new ArcRotateCamera(
       "MainCamera",
       -Math.PI / 2,
-      0.54,
+      cameraBeta,
       baseRadius,
       new Vector3(0, 0, 0),
       this.scene
     );
     // Lock camera – no user rotation/zoom/pan
-    this.camera.lowerBetaLimit = 0.54;
-    this.camera.upperBetaLimit = 0.54;
+    this.camera.lowerBetaLimit = cameraBeta;
+    this.camera.upperBetaLimit = cameraBeta;
     this.camera.lowerRadiusLimit = baseRadius;
     this.camera.upperRadiusLimit = baseRadius;
     this.camera.lowerAlphaLimit = -Math.PI / 2;

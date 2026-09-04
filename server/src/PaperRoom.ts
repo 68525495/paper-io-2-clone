@@ -1,10 +1,10 @@
 import { Client, Room } from "@colyseus/core";
 import {
-  ARENA_SIZE,
   BOT_NAMES,
+  CELL_SIZE,
   CHARACTER_SKINS,
   COLOR_PALETTE,
-  HALF_ARENA_SIZE,
+  INITIAL_BASE_RADIUS_CELLS,
   MAX_BUBBLES,
   MAX_COINS,
   PLAYER_BOOST_SPEED,
@@ -14,7 +14,12 @@ import {
   TRAIL_MIN_SEGMENT_DIST,
   TRAIL_RADIUS,
   TRAIL_SELF_HIT_SAFE_SEGMENTS,
+  TERRITORY_SCORE_PER_CELL,
 } from "./constants.js";
+import {
+  constrainPointToArena,
+  randomPointInsideArena,
+} from "./arenaShape.js";
 import {
   FullGridSyncMessage,
   GameOverMessage,
@@ -29,6 +34,7 @@ import {
   clamp,
   distance,
   distToSegmentSq,
+  normalizeAngle,
   stepAngle,
 } from "./geometry.js";
 import { GameState, PickupState, PlayerState, TrailPoint } from "./schema.js";
@@ -49,6 +55,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
   private playerInputs = new Map<string, PlayerInput>();
   private playerTrails = new Map<string, TrailPoint[]>();
   private bots = new Map<string, BotController>();
+  private botRespawnAt = new Map<string, number>();
   private nextBotId = 1;
   private targetBotCount = 4;
   private pickupCounter = 1;
@@ -60,25 +67,27 @@ export class PaperRoom extends Room<{ state: GameState }> {
     this.setState(new GameState());
     this.setPatchRate(1000 / 15); // 15Hz patching
     this.setSimulationInterval((dt) => this.update(dt), 1000 / 30); // 30Hz simulation
-    this.autoDispose = false;
-
-    // Independent heartbeat to detect if event loop is alive
-    setInterval(() => {
-      console.log(`[PaperRoom] HEARTBEAT tickCount=${this.tickCount} clients=${this.clients?.length ?? 0}`);
-    }, 3000);
 
     // Register input handler
     this.onMessage("input", (client, message: Partial<InputMessage>) => {
       const input = this.playerInputs.get(client.sessionId);
       if (!input) return;
 
+      const nextSeq = Number(message.seq);
+      if (Number.isSafeInteger(nextSeq)) {
+        if (nextSeq <= input.seq) return;
+        input.seq = nextSeq;
+      } else {
+        input.seq++;
+      }
+
       if (Number.isFinite(message.targetAngle)) {
-        input.targetAngle = Number(message.targetAngle);
+        input.targetAngle = normalizeAngle(Number(message.targetAngle));
       }
       input.boost = Boolean(message.boost);
-      input.seq = Number(message.seq) || input.seq + 1;
-      input.dt = Number(message.dt) || 0;
-      input.clientTime = Number(message.clientTime) || Date.now();
+      input.dt = clamp(Number(message.dt) || 0, 0, 100);
+      const clientTime = Number(message.clientTime);
+      input.clientTime = Number.isFinite(clientTime) ? clientTime : Date.now();
 
       const player = this.state.players.get(client.sessionId);
       if (player) {
@@ -103,11 +112,6 @@ export class PaperRoom extends Room<{ state: GameState }> {
       // Diagnostic message from runner/client
     });
 
-    // Runner latency metrics reporting (sent every 2s by client)
-    this.onMessage("__runner_metrics", (client, message: unknown) => {
-      // Ignored or logged
-    });
-
     // Fallback wildcard handler so NO unknown message ever triggers CloseCode.WITH_ERROR (4002)
     this.onMessage("*", (client, type: string | number, message: unknown) => {
       // Silently ignore unknown message types
@@ -116,17 +120,24 @@ export class PaperRoom extends Room<{ state: GameState }> {
     // Initialize map pickups
     this.initPickups();
 
-    // Spawn initial bots
-    for (let i = 0; i < this.targetBotCount; i++) {
-      this.spawnBot();
-    }
   }
 
   onJoin(client: Client, options: { name?: string }) {
+    if (this.isLateGame) {
+      client.leave(4003, "Game in late stage (>50% occupied)");
+      return;
+    }
+
     const rawName = typeof options.name === "string" ? options.name.trim() : "";
     const name = rawName.slice(0, 14) || `Player_${client.sessionId.slice(-4)}`;
 
     this.spawnPlayer(client.sessionId, name, false);
+
+    // Rooms are created by a real join. Delay Bot creation until that player is
+    // present so empty Rooms can auto-dispose without running AI forever.
+    if (this.bots.size === 0) {
+      for (let i = 0; i < this.targetBotCount; i++) this.spawnBot();
+    }
 
     // Send initial full grid sync
     client.send("full_grid_sync", {
@@ -174,8 +185,9 @@ export class PaperRoom extends Room<{ state: GameState }> {
       const p = new PickupState();
       p.id = `bubble_${this.pickupCounter++}`;
       p.kind = "bubble";
-      p.x = (Math.random() - 0.5) * (ARENA_SIZE - 24);
-      p.y = (Math.random() - 0.5) * (ARENA_SIZE - 24);
+      const position = randomPointInsideArena(12);
+      p.x = position.x;
+      p.y = position.y;
       p.active = true;
       this.state.pickups.push(p);
     }
@@ -184,8 +196,9 @@ export class PaperRoom extends Room<{ state: GameState }> {
       const p = new PickupState();
       p.id = `coin_${this.pickupCounter++}`;
       p.kind = "coin";
-      p.x = (Math.random() - 0.5) * (ARENA_SIZE - 20);
-      p.y = (Math.random() - 0.5) * (ARENA_SIZE - 20);
+      const position = randomPointInsideArena(10);
+      p.x = position.x;
+      p.y = position.y;
       p.active = true;
       this.state.pickups.push(p);
     }
@@ -220,10 +233,13 @@ export class PaperRoom extends Room<{ state: GameState }> {
     let spawnX = 0;
     let spawnY = 0;
     let bestDist = -1;
+    const spawnInset =
+      INITIAL_BASE_RADIUS_CELLS * CELL_SIZE + PLAYER_RADIUS + CELL_SIZE;
 
-    for (let attempt = 0; attempt < 10; attempt++) {
-      const candX = (Math.random() - 0.5) * (ARENA_SIZE - 40);
-      const candY = (Math.random() - 0.5) * (ARENA_SIZE - 40);
+    for (let attempt = 0; attempt < 15; attempt++) {
+      const candidate = randomPointInsideArena(spawnInset);
+      const candX = candidate.x;
+      const candY = candidate.y;
       let minDist = 9999;
       this.state.players.forEach((other) => {
         if (other.id !== id && other.alive) {
@@ -244,6 +260,8 @@ export class PaperRoom extends Room<{ state: GameState }> {
       CHARACTER_SKINS[Math.floor(Math.random() * CHARACTER_SKINS.length)];
     player.x = spawnX;
     player.y = spawnY;
+    player.spawnX = spawnX;
+    player.spawnY = spawnY;
     player.angle = Math.random() * Math.PI * 2 - Math.PI;
     player.targetAngle = player.angle;
     player.speed = PLAYER_SPEED;
@@ -275,6 +293,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
   }
 
   private spawnBot() {
+    if (this.isLateGame) return; // Do not enter new characters in late game
     const botId = `bot_${this.nextBotId++}`;
     const botName =
       BOT_NAMES[(this.nextBotId + Math.floor(Math.random() * 5)) % BOT_NAMES.length];
@@ -282,12 +301,13 @@ export class PaperRoom extends Room<{ state: GameState }> {
     const botPlayer = this.spawnPlayer(botId, botName, true);
     const controller = new BotController(botId, botPlayer.x, botPlayer.y);
     this.bots.set(botId, controller);
+    this.botRespawnAt.delete(botId);
   }
 
   private isGameOver = false;
 
   private update(deltaTime: number) {
-    if (this.isGameOver) return;
+    if (this.isGameOver || this.clients.length === 0) return;
     this.tickCount++;
     try {
       this.updateInner(deltaTime);
@@ -316,9 +336,17 @@ export class PaperRoom extends Room<{ state: GameState }> {
       if (!botPlayer) return;
 
       if (!botPlayer.alive) {
-        // Respawn dead bot after brief delay
+        const now = Date.now();
+        let respawnAt = this.botRespawnAt.get(botId);
+        if (!respawnAt) {
+          respawnAt = now + 1800;
+          this.botRespawnAt.set(botId, respawnAt);
+        }
+        if (now < respawnAt) return;
+
         this.spawnPlayer(botId, botPlayer.name, true);
-        botCtrl.setHome(botPlayer.x, botPlayer.y);
+        botCtrl.reset(botPlayer.x, botPlayer.y, botPlayer.angle);
+        this.botRespawnAt.delete(botId);
         return;
       }
 
@@ -354,10 +382,15 @@ export class PaperRoom extends Room<{ state: GameState }> {
       player.x += Math.cos(player.angle) * moveSpeed * dt;
       player.y += Math.sin(player.angle) * moveSpeed * dt;
 
-      // Boundary Check: Clamp to arena borders (no death on hitting edge)
-      const maxBound = HALF_ARENA_SIZE - PLAYER_RADIUS;
-      player.x = clamp(player.x, -maxBound, maxBound);
-      player.y = clamp(player.y, -maxBound, maxBound);
+      // Boundary check: keep the entire character on the same smooth island
+      // contour used by the world mesh and minimap.
+      const constrained = constrainPointToArena(
+        player.x,
+        player.y,
+        PLAYER_RADIUS
+      );
+      player.x = constrained.x;
+      player.y = constrained.y;
 
       // Check Territory status
       const inOwnLand = this.grid.isOwnTerritory(player.id, player.x, player.y);
@@ -407,7 +440,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
     this.state.players.forEach((p) => {
       if (p.isBot) botCount++;
     });
-    if (botCount < this.targetBotCount) {
+    if (this.clients.length > 0 && botCount < this.targetBotCount) {
       this.spawnBot();
     }
 
@@ -442,13 +475,20 @@ export class PaperRoom extends Room<{ state: GameState }> {
       if (!killer.alive) continue;
 
       for (let j = 0; j < players.length; j++) {
-        if (i === j) continue;
         const victim = players[j];
         const victimTrail = this.playerTrails.get(victim.id) || [];
         if (!victim.alive || victimTrail.length < 2) continue;
 
-        // Check if killer's head intersects any segment of victim's trail
-        for (let s = 0; s < victimTrail.length - 1; s++) {
+        const isSelfCollision = killer.id === victim.id;
+        const segmentLimit = isSelfCollision
+          ? victimTrail.length - TRAIL_SELF_HIT_SAFE_SEGMENTS - 1
+          : victimTrail.length - 1;
+        if (segmentLimit <= 0) continue;
+
+        // Enemy trails are lethal to their owner when cut. Crossing an old
+        // portion of one's own trail is a suicide; recent head segments are
+        // excluded so a freshly emitted trail cannot kill its owner.
+        for (let s = 0; s < segmentLimit; s++) {
           const p1 = victimTrail[s];
           const p2 = victimTrail[s + 1];
           if (
@@ -462,13 +502,16 @@ export class PaperRoom extends Room<{ state: GameState }> {
               p2.y
             )
           ) {
-            // Elimination!
-            killer.kills++;
-            killer.score += 250;
-            this.eliminatePlayer(victim.id, killer.id, false);
+            this.eliminatePlayer(
+              victim.id,
+              killer.id,
+              isSelfCollision
+            );
             break;
           }
         }
+
+        if (!killer.alive) break;
       }
     }
   }
@@ -505,8 +548,9 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
           // Respawn pickup after delay
           this.clock.setTimeout(() => {
-            pickup.x = (Math.random() - 0.5) * (ARENA_SIZE - 24);
-            pickup.y = (Math.random() - 0.5) * (ARENA_SIZE - 24);
+            const position = randomPointInsideArena(12);
+            pickup.x = position.x;
+            pickup.y = position.y;
             pickup.active = true;
           }, 8000);
         }
@@ -533,7 +577,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
     this.playerTrails.set(player.id, []);
     player.territoryCells = this.grid.countTerritoryCells(player.id);
     player.territoryPercent = result.newPercent;
-    player.score += result.capturedCount * 5;
+    player.score += Math.round(result.capturedCount * TERRITORY_SCORE_PER_CELL);
 
     // Eliminate any players trapped inside
     for (const trappedId of result.trappedPlayerIds) {
@@ -555,7 +599,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
     // Instant grid broadcast so newly captured territory appears in 1 frame
     this.broadcastGridNow();
 
-    // Broadcast capture event for client VFX / floating score
+    // Broadcast capture event for client VFX / floating score.
     this.broadcast("territory_captured", {
       playerId: player.id,
       cellsCount: result.capturedCount,
@@ -566,6 +610,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
     // Check if map is 100% full or occupied
     this.checkGameOver();
+    this.checkLateGame();
   }
 
   private eliminatePlayer(victimId: string, killerId: string, isSuicide: boolean) {
@@ -585,9 +630,11 @@ export class PaperRoom extends Room<{ state: GameState }> {
       absorbedCount = this.grid.transferPlayerTerritory(victimId, killer.id);
       killer.territoryCells = this.grid.countTerritoryCells(killer.id);
       killer.territoryPercent = this.grid.getTerritoryPercent(killer.id);
-      absorbedPercent = Number(((absorbedCount / this.grid.totalCells) * 100).toFixed(2));
+      absorbedPercent = Number(
+        ((absorbedCount / this.grid.playableCellCount) * 100).toFixed(2)
+      );
       killer.kills++;
-      killer.score += 250 + absorbedCount * 5;
+      killer.score += 250 + Math.round(absorbedCount * TERRITORY_SCORE_PER_CELL);
     } else {
       // Dissolve to neutral if no killer
       this.grid.clearPlayerTerritory(victimId);
@@ -613,6 +660,23 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
     // Check if game is over
     this.checkGameOver();
+    this.checkLateGame();
+  }
+
+  private isLateGame = false;
+
+  private checkLateGame() {
+    if (this.isLateGame) return;
+    const neutralCells = this.grid.countNeutralCells();
+    const claimedPercent =
+      ((this.grid.playableCellCount - neutralCells) /
+        this.grid.playableCellCount) *
+      100;
+    if (claimedPercent >= 50) {
+      this.isLateGame = true;
+      this.lock(); // Lock room so Colyseus matchmaker routes new players elsewhere
+      console.log(`[PaperRoom] Late game triggered! ${claimedPercent.toFixed(1)}% claimed. Room locked against new players.`);
+    }
   }
 
   private checkGameOver() {
@@ -650,6 +714,9 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
   private resetMatch() {
     this.isGameOver = false;
+    this.isLateGame = false;
+    this.unlock();
+    this.botRespawnAt.clear();
     // Clear entire grid
     for (let i = 0; i < this.grid.totalCells; i++) {
       this.grid.cells[i] = 0;
@@ -657,6 +724,9 @@ export class PaperRoom extends Room<{ state: GameState }> {
     // Respawn all players fresh
     this.state.players.forEach((p, id) => {
       this.spawnPlayer(id, p.name, p.isBot);
+      if (p.isBot) {
+        this.bots.get(id)?.reset(p.x, p.y, p.angle);
+      }
     });
     this.broadcastGridNow();
   }

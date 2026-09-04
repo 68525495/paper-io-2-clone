@@ -4,6 +4,10 @@ import {
   GRID_CELLS,
   HALF_ARENA_SIZE,
 } from "../shared/constants.js";
+import {
+  ARENA_CONTOUR,
+  ArenaPoint,
+} from "../shared/arenaShape.js";
 
 export class MiniMap {
   private canvas: HTMLCanvasElement;
@@ -20,6 +24,26 @@ export class MiniMap {
     this.ctx = this.canvas.getContext("2d") as CanvasRenderingContext2D;
   }
 
+  private worldToCanvas(point: ArenaPoint): { x: number; y: number } {
+    return {
+      x: ((point.x + HALF_ARENA_SIZE) / ARENA_SIZE) * this.size,
+      y:
+        this.size -
+        ((point.y + HALF_ARENA_SIZE) / ARENA_SIZE) * this.size,
+    };
+  }
+
+  private traceArenaPath() {
+    const first = this.worldToCanvas(ARENA_CONTOUR[0]);
+    this.ctx.beginPath();
+    this.ctx.moveTo(first.x, first.y);
+    for (let index = 1; index < ARENA_CONTOUR.length; index++) {
+      const point = this.worldToCanvas(ARENA_CONTOUR[index]);
+      this.ctx.lineTo(point.x, point.y);
+    }
+    this.ctx.closePath();
+  }
+
   render(
     rawGrid: Uint8Array | number[],
     playerColors: Map<number, string>,
@@ -30,26 +54,13 @@ export class MiniMap {
 
     ctx.clearRect(0, 0, s, s);
 
-    // 1. Draw organic island container shape (matching screenshot)
+    // 1. Draw and clip to the exact same canonical coastline as the 3D map.
     ctx.save();
-    ctx.beginPath();
-    // Rounded organic path resembling the reference screenshot
-    ctx.moveTo(s * 0.15, s * 0.45);
-    ctx.bezierCurveTo(s * 0.05, s * 0.25, s * 0.35, s * 0.05, s * 0.65, s * 0.08);
-    ctx.bezierCurveTo(s * 0.85, s * 0.1, s * 0.95, s * 0.35, s * 0.92, s * 0.65);
-    ctx.bezierCurveTo(s * 0.9, s * 0.92, s * 0.55, s * 0.95, s * 0.35, s * 0.9);
-    ctx.bezierCurveTo(s * 0.1, s * 0.85, s * 0.05, s * 0.65, s * 0.15, s * 0.45);
-    ctx.closePath();
+    this.traceArenaPath();
 
     // Island background
     ctx.fillStyle = "#F5FCFA";
     ctx.fill();
-
-    // Island border outline (dark slate border matching screenshot)
-    ctx.lineWidth = 3.5;
-    ctx.strokeStyle = "#2C5364";
-    ctx.stroke();
-
     ctx.clip(); // Clip territory inside the island boundary
 
     // 2. Draw low-res territory pixels
@@ -69,9 +80,7 @@ export class MiniMap {
       }
     }
 
-    ctx.restore();
-
-    // 3. Draw player radar dots
+    // 3. Draw player radar dots within the same coastline clip.
     for (const p of players) {
       if (!p.alive) continue;
 
@@ -105,5 +114,14 @@ export class MiniMap {
         ctx.fill();
       }
     }
+
+    ctx.restore();
+
+    // 4. Keep the shared smooth coastline visible above territory and dots.
+    this.traceArenaPath();
+    ctx.lineWidth = 3.5;
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#2C5364";
+    ctx.stroke();
   }
 }

@@ -1,14 +1,28 @@
 export const ARENA_SIZE = 160;
 export const HALF_ARENA_SIZE = ARENA_SIZE / 2;
-export const GRID_CELLS = 120;
-export const CELL_SIZE = ARENA_SIZE / GRID_CELLS; // ~1.333 world units per cell
+export const GRID_CELLS = 256;
+export const CELL_SIZE = ARENA_SIZE / GRID_CELLS; // 0.625 world units per cell
 
 export const PLAYER_SPEED = 14.0;
 export const PLAYER_BOOST_SPEED = 20.0;
 export const PLAYER_TURN_SPEED = 8.0;
 export const PLAYER_RADIUS = 1.2;
 export const TRAIL_RADIUS = 0.45;
-export const TRAIL_MIN_SEGMENT_DIST = 0.55;
+export const INITIAL_BASE_RADIUS_CELLS = 9;
+export const INITIAL_BASE_COUNT = 261;
+
+export function clamp(val: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, val));
+}
+
+export function worldToGrid(x: number, y: number): { gx: number; gy: number } {
+  const gx = Math.floor((x + HALF_ARENA_SIZE) / CELL_SIZE);
+  const gy = Math.floor((y + HALF_ARENA_SIZE) / CELL_SIZE);
+  return {
+    gx: clamp(gx, 0, GRID_CELLS - 1),
+    gy: clamp(gy, 0, GRID_CELLS - 1),
+  };
+}
 
 export const COLOR_PALETTE = [
   "#00D2FF", // 1. Electric Cyan (Fresh bright cyan)

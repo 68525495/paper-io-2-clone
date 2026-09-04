@@ -13,13 +13,15 @@ export class PlayerState extends Schema {
   @type("float32") speed: number = 14;
   @type("boolean") alive: boolean = true;
   @type("boolean") isBot: boolean = false;
-  @type("uint16") score: number = 0;
+  @type("uint32") score: number = 0;
   @type("uint16") kills: number = 0;
-  @type("uint16") territoryCells: number = 0;
+  @type("uint32") territoryCells: number = 0;
   @type("float32") territoryPercent: number = 0;
   @type("uint8") rank: number = 0;
   @type("boolean") inTerritory: boolean = true;
   @type("float64") boostUntil: number = 0;
+  @type("float32") spawnX: number = 0;
+  @type("float32") spawnY: number = 0;
   // Trail data is sent as raw messages, NOT via schema (perf)
 }
 
