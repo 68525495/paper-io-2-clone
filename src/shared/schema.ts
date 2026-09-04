@@ -44,4 +44,12 @@ export class GameState extends Schema {
   @type("string") leaderId: string = "";
   @type("uint32") serverTick: number = 0;
   @type("float64") serverTime: number = 0;
+  // Durable match result; keep these appended to mirror the server schema.
+  @type("boolean") gameOver: boolean = false;
+  @type("string") winnerId: string = "";
+  @type("string") winnerName: string = "";
+  @type("string") winnerColor: string = "";
+  @type("float32") winnerPercent: number = 0;
+  @type("uint16") winnerKills: number = 0;
+  @type("string") winnerReason: string = "";
 }

@@ -29,6 +29,7 @@ import {
   PickupCollectedMessage,
   PlayerKilledMessage,
   TerritoryCapturedMessage,
+  VictoryReason,
 } from "./protocol.js";
 import { BotController } from "./bot.js";
 import {
@@ -37,8 +38,8 @@ import {
   distance,
   distToSegmentSq,
   normalizeAngle,
-  stepAngle,
 } from "./geometry.js";
+import { advanceTurningPose } from "./movement.js";
 import { GameState, PickupState, PlayerState, TrailPoint } from "./schema.js";
 import { TerritoryGrid } from "./territory.js";
 
@@ -49,6 +50,9 @@ interface PlayerInput {
   dt: number;
   clientTime: number;
 }
+
+const ENTRY_LOCK_TERRITORY_PERCENT = 50;
+const ENTRY_LOCK_CLOSE_CODE = 4403;
 
 export class PaperRoom extends Room<{ state: GameState }> {
   maxClients = Math.max(1, Number(process.env.MAX_PLAYERS_PER_ROOM || 8));
@@ -68,7 +72,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
   onCreate(options: { practice?: boolean } = {}) {
     this.setState(new GameState());
     this.state.serverTime = Date.now();
-    this.setPatchRate(1000 / 15); // 15Hz patching
+    this.setPatchRate(1000 / 30); // Match the 30Hz authoritative simulation
     this.setSimulationInterval((dt) => this.update(dt), 1000 / 30); // 30Hz simulation
 
     // Register input handler
@@ -136,8 +140,13 @@ export class PaperRoom extends Room<{ state: GameState }> {
   }
 
   onJoin(client: Client, options: { name?: string }) {
-    if (this.isLateGame) {
-      client.leave(4003, "Game in late stage (>50% occupied)");
+    if (this.isGameOver || this.checkLateGame()) {
+      void client.leave(
+        ENTRY_LOCK_CLOSE_CODE,
+        this.isGameOver
+          ? "The match is already complete"
+          : "A player controls more than 50% of the map"
+      );
       return;
     }
 
@@ -167,6 +176,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
       this.syncGridToAll();
     }
     this.playerInputs.delete(client.sessionId);
+    if (player) this.checkGameOver();
   }
 
   private syncGridToAll() {
@@ -328,13 +338,26 @@ export class PaperRoom extends Room<{ state: GameState }> {
       clientTime: Date.now(),
     });
 
-
+    this.noteContestedMatch();
     this.syncGridToAll();
     return player;
   }
 
+  private noteContestedMatch() {
+    if (this.matchWasContested) return;
+    let alivePlayers = 0;
+    for (const player of this.state.players.values()) {
+      if (!player.alive) continue;
+      alivePlayers++;
+      if (alivePlayers >= 2) {
+        this.matchWasContested = true;
+        return;
+      }
+    }
+  }
+
   private spawnBot() {
-    if (this.isLateGame) return; // Do not enter new characters in late game
+    if (this.isGameOver || this.checkLateGame()) return;
     const botId = `bot_${this.nextBotId++}`;
     const botName =
       BOT_NAMES[(this.nextBotId + Math.floor(Math.random() * 5)) % BOT_NAMES.length];
@@ -346,6 +369,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
   }
 
   private isGameOver = false;
+  private matchWasContested = false;
 
   private update(deltaTime: number) {
     if (this.isGameOver || this.clients.length === 0) return;
@@ -383,6 +407,13 @@ export class PaperRoom extends Room<{ state: GameState }> {
       if (!botPlayer) return;
 
       if (!botPlayer.alive) {
+        if (this.isLateGame) {
+          // A lock permanently retires dead Bots for the rest of this match,
+          // including any respawn that was scheduled before the lock.
+          this.botRespawnAt.delete(botId);
+          return;
+        }
+
         const now = Date.now();
         let respawnAt = this.botRespawnAt.get(botId);
         if (!respawnAt) {
@@ -424,17 +455,20 @@ export class PaperRoom extends Room<{ state: GameState }> {
       const previousX = player.x;
       const previousY = player.y;
 
-      // Turn towards target angle with max angular speed
-      player.angle = stepAngle(player.angle, targetAngle, PLAYER_TURN_SPEED * dt);
-
       // Speed calculation (boost from pickup)
       const isBoosted = Date.now() < player.boostUntil;
       const moveSpeed = isBoosted ? PLAYER_BOOST_SPEED : PLAYER_SPEED;
       player.speed = moveSpeed;
 
-      // Move player forward in current heading angle
-      player.x += Math.cos(player.angle) * moveSpeed * dt;
-      player.y += Math.sin(player.angle) * moveSpeed * dt;
+      // Exact circular-arc integration gives the same path regardless of
+      // client render FPS and avoids recurring prediction corrections.
+      advanceTurningPose(
+        player,
+        targetAngle,
+        moveSpeed,
+        PLAYER_TURN_SPEED,
+        dt
+      );
 
       // Boundary check: keep the entire character on the same smooth island
       // contour used by the world mesh and minimap.
@@ -625,7 +659,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
     // Eliminate any players trapped inside
     for (const trappedId of result.trappedPlayerIds) {
-      this.eliminatePlayer(trappedId, player.id, false, false);
+      this.eliminatePlayer(trappedId, player.id, false, false, false);
     }
 
     // Recalculate territory percent for all players
@@ -634,7 +668,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
         p.territoryCells = this.grid.countTerritoryCells(p.id);
         p.territoryPercent = this.grid.getTerritoryPercent(p.id);
         if (p.territoryCells === 0) {
-          this.eliminatePlayer(p.id, player.id, false, false);
+          this.eliminatePlayer(p.id, player.id, false, false, false);
         }
       }
     });
@@ -661,7 +695,8 @@ export class PaperRoom extends Room<{ state: GameState }> {
     victimId: string,
     killerId: string,
     isSuicide: boolean,
-    broadcastGrid: boolean = true
+    broadcastGrid: boolean = true,
+    checkMatchState: boolean = true
   ) {
     const victim = this.state.players.get(victimId);
     if (!victim || !victim.alive) return;
@@ -710,64 +745,128 @@ export class PaperRoom extends Room<{ state: GameState }> {
       absorbedPercent,
     } as PlayerKilledMessage);
 
-    // Check if game is over
-    this.checkGameOver();
-    this.checkLateGame();
+    if (checkMatchState) {
+      this.checkGameOver();
+      this.checkLateGame();
+    }
   }
 
   private isLateGame = false;
 
-  private checkLateGame() {
-    if (this.isLateGame) return;
-    const neutralCells = this.grid.countNeutralCells();
-    const claimedPercent =
-      ((this.grid.playableCellCount - neutralCells) /
-        this.grid.playableCellCount) *
-      100;
-    if (claimedPercent >= 50) {
-      this.isLateGame = true;
-      this.lock(); // Lock room so Colyseus matchmaker routes new players elsewhere
-      console.log(`[PaperRoom] Late game triggered! ${claimedPercent.toFixed(1)}% claimed. Room locked against new players.`);
+  private checkLateGame(): boolean {
+    if (this.isGameOver) return true;
+    if (this.isLateGame) return true;
+
+    let dominantPlayer: PlayerState | undefined;
+    let dominantTerritoryCells = 0;
+    for (const player of this.state.players.values()) {
+      if (!player.alive) continue;
+      const territoryCells = this.grid.countTerritoryCells(player.id);
+      if (
+        territoryCells * 100 >
+        this.grid.playableCellCount * ENTRY_LOCK_TERRITORY_PERCENT
+      ) {
+        dominantPlayer = player;
+        dominantTerritoryCells = territoryCells;
+        break;
+      }
     }
+
+    if (!dominantPlayer) return false;
+
+    this.isLateGame = true;
+    // Make joinOrCreate route subsequent players elsewhere. The synchronous
+    // latch above remains the admission fallback for already-reserved seats.
+    void this.lock().catch((error: unknown) => {
+      console.error("[PaperRoom] Failed to persist late-game room lock:", error);
+    });
+    const territoryPercent =
+      (dominantTerritoryCells / this.grid.playableCellCount) * 100;
+    console.log(
+      `[PaperRoom] Late game triggered! ${dominantPlayer.name} owns ${territoryPercent.toFixed(1)}%. Room locked against new players and Bots.`
+    );
+    return true;
   }
 
   private checkGameOver() {
     if (this.isGameOver) return;
-    const neutralCells = this.grid.countNeutralCells();
-    let maxPercent = 0;
+    const alivePlayers = [...this.state.players.values()].filter(
+      (player) => player.alive
+    );
     let winner: PlayerState | undefined;
+    let victoryReason: VictoryReason | undefined;
 
-    for (const [, p] of this.state.players) {
-      if (p.alive && p.territoryPercent > maxPercent) {
-        maxPercent = p.territoryPercent;
-        winner = p;
-      }
+    // Exact map occupation remains the highest-priority victory condition.
+    for (const p of alivePlayers) {
+      if (!this.grid.tryFinalizeMapOccupation(p.id)) continue;
+      winner = p;
+      victoryReason = "map_occupied";
+      break;
     }
 
-    // If map is full (<= 30 neutral cells, i.e. 99.8%+ claimed) or single player dominates
-    if (neutralCells <= 30 || maxPercent >= 99.9) {
-      this.isGameOver = true;
-      const winnerId = winner ? winner.id : "";
-      const winnerName = winner ? winner.name : "Champion";
-      const winnerColor = winner ? winner.color : "#00D2FF";
-      const winnerPercent = winner ? winner.territoryPercent : 100;
-      const winnerKills = winner ? winner.kills : 0;
-
-      console.log(`[PaperRoom] GAME OVER! Winner: ${winnerName} (${winnerPercent}%)`);
-      this.broadcast("game_over", {
-        winnerId,
-        winnerName,
-        winnerColor,
-        winnerPercent,
-        winnerKills,
-      } as GameOverMessage);
+    // A match that was genuinely contested also ends when only one living
+    // participant remains. Dead players awaiting respawn are no longer on the
+    // map; zero survivors is a draw-in-progress rather than a victory.
+    if (!winner && this.matchWasContested && alivePlayers.length === 1) {
+      winner = alivePlayers[0];
+      victoryReason = "last_survivor";
     }
+
+    if (!winner || !victoryReason) return;
+
+    this.isGameOver = true;
+    this.state.players.forEach((player) => {
+      player.territoryCells = this.grid.countTerritoryCells(player.id);
+      player.territoryPercent = this.grid.getTerritoryPercent(player.id);
+    });
+    this.state.gameOver = true;
+    this.state.winnerId = winner.id;
+    this.state.winnerName = winner.name;
+    this.state.winnerColor = winner.color;
+    this.state.winnerPercent = winner.territoryPercent;
+    this.state.winnerKills = winner.kills;
+    this.state.winnerReason = victoryReason;
+
+    // Last-survivor wins can happen below the late-game territory threshold,
+    // so lock the completed room while retaining the synchronous onJoin guard.
+    if (!this.isLateGame) {
+      void this.lock().catch((error: unknown) => {
+        console.error("[PaperRoom] Failed to persist completed room lock:", error);
+      });
+    }
+
+    // Publish the final authoritative grid before clients receive the result.
+    // Map occupation may have just awarded the unreachable neutral coastline;
+    // last-survivor victory intentionally preserves the actual territory map.
+    this.broadcastGridNow();
+
+    console.log(
+      `[PaperRoom] GAME OVER! Winner: ${winner.name} (${winner.territoryPercent.toFixed(2)}%, ${victoryReason})`
+    );
+    this.broadcast("game_over", {
+      winnerId: winner.id,
+      winnerName: winner.name,
+      winnerColor: winner.color,
+      winnerPercent: winner.territoryPercent,
+      winnerKills: winner.kills,
+      victoryReason,
+    } as GameOverMessage);
   }
 
   private resetMatch() {
     this.isGameOver = false;
     this.isLateGame = false;
-    this.unlock();
+    this.matchWasContested = false;
+    this.state.gameOver = false;
+    this.state.winnerId = "";
+    this.state.winnerName = "";
+    this.state.winnerColor = "";
+    this.state.winnerPercent = 0;
+    this.state.winnerKills = 0;
+    this.state.winnerReason = "";
+    void this.unlock().catch((error: unknown) => {
+      console.error("[PaperRoom] Failed to unlock reset room:", error);
+    });
     this.botRespawnAt.clear();
     // Clear entire grid
     for (let i = 0; i < this.grid.totalCells; i++) {

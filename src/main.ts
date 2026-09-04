@@ -46,6 +46,7 @@ function returnToStartScreen() {
   movementSynchronizer?.reset();
   if (uiManager) {
     uiManager.hideDeathScreen();
+    uiManager.hideGameOverScreen();
   }
 
   document.getElementById("game-screen")?.classList.add("hidden");
@@ -143,16 +144,19 @@ async function initGame(playerName: string) {
       }
 
       const clientTime = Date.now();
+      const frameTime = performance.now();
       movementSynchronizer!.setLocalInput(inputController!.targetAngle);
       movementSynchronizer!.setNetworkTiming(
         client.getServerClockOffsetMs(),
         client.getSmoothedRttMs()
       );
       uiManager!.updateLatency(client.getSmoothedRttMs());
-      const sentInput = client.sendInput(
-        inputController!.targetAngle,
-        inputController!.boost
-      );
+      const sentInput = client.room.state.gameOver
+        ? null
+        : client.sendInput(
+            inputController!.targetAngle,
+            inputController!.boost
+          );
       if (sentInput) movementSynchronizer!.recordLocalInput(sentInput);
 
       const playersState = client.room.state.players;
@@ -166,7 +170,8 @@ async function initGame(playerName: string) {
           sessionId,
           player,
           isLocal,
-          clientTime
+          clientTime,
+          frameTime
         );
 
         if (player.playerIndex > 0) {
@@ -276,6 +281,11 @@ async function initGame(playerName: string) {
     });
   };
 
+  // Only a true -> false transition in durable state means the server reset
+  // the match. Legacy servers send only game_over messages, so an ordinary
+  // false patch from them must not dismiss the result page.
+  let observedGameOverState = false;
+
   // 3. Setup Network Event Handlers on client
   client!.onGridSync = (gridArray) => {
     pendingTerritoryGrid = gridArray;
@@ -321,7 +331,15 @@ async function initGame(playerName: string) {
 
   client!.onGameOver = (msg) => {
     const isWinner = msg.winnerId === client!.localSessionId;
-    uiManager!.showGameOverScreen(msg.winnerName, isWinner, msg.winnerPercent, msg.winnerKills);
+    uiManager!.showGameOverScreen(
+      msg.winnerId,
+      msg.winnerName,
+      msg.winnerColor,
+      isWinner,
+      msg.winnerPercent,
+      msg.winnerKills,
+      msg.victoryReason ?? "map_occupied"
+    );
   };
 
   uiManager!.onRespawnClick = () => {
@@ -349,6 +367,13 @@ async function initGame(playerName: string) {
     const room = await client!.connect(playerName);
     connectOverlay.remove();
     movementSynchronizer!.setLocalPlayer(client!.localSessionId);
+    const localPlayer = room.state.players.get(client!.localSessionId);
+    if (localPlayer) {
+      // Do not force every newly spawned player toward the default zero angle
+      // before their first touch sample arrives.
+      inputController!.targetAngle = localPlayer.angle;
+      movementSynchronizer!.setLocalInput(localPlayer.angle);
+    }
 
     const updateStatePresentation = (state: typeof room.state) => {
       movementSynchronizer!.captureState(state);
@@ -374,6 +399,29 @@ async function initGame(playerName: string) {
         charRenderer!.cleanupRemoved(state.players);
         trailRenderer!.cleanupRemoved(state.players);
         movementSynchronizer!.cleanupRemoved(state.players);
+
+        // Match completion is durable state as well as an immediate message,
+        // so a delayed patch still produces the result page reliably.
+        if (state.gameOver && state.winnerId) {
+          const winner = state.players.get(state.winnerId);
+          const victoryReason =
+            state.winnerReason === "last_survivor"
+              ? "last_survivor"
+              : "map_occupied";
+          uiManager!.showGameOverScreen(
+            state.winnerId,
+            state.winnerName || winner?.name || "Champion",
+            state.winnerColor || winner?.color || "#6350E5",
+            state.winnerId === client!.localSessionId,
+            state.winnerPercent || winner?.territoryPercent || 100,
+            state.winnerKills || winner?.kills || 0,
+            victoryReason
+          );
+          observedGameOverState = true;
+        } else if (observedGameOverState) {
+          uiManager!.hideGameOverScreen();
+          observedGameOverState = false;
+        }
       }
     };
     updateStatePresentation(room.state);

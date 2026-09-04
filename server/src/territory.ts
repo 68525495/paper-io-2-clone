@@ -3,6 +3,7 @@ import {
   GRID_CELLS,
   HALF_ARENA_SIZE,
   INITIAL_BASE_RADIUS_CELLS,
+  PLAYER_RADIUS,
 } from "./constants.js";
 import { isPointInsideArena } from "./arenaShape.js";
 import { clamp, gridToWorld, worldToGrid } from "./geometry.js";
@@ -31,6 +32,9 @@ export class TerritoryGrid {
   /** 1 for cells whose center is inside the organic island boundary. */
   readonly playableMask: Uint8Array;
   readonly playableCellCount: number;
+  /** Cells whose centers lie inside the player-radius movement boundary. */
+  readonly completionMask: Uint8Array;
+  readonly completionCellCount: number;
 
   /** Map player ID (string) to numeric player index (1..255) */
   private playerIndices = new Map<string, number>();
@@ -40,17 +44,25 @@ export class TerritoryGrid {
   constructor() {
     this.cells = new Uint8Array(this.totalCells);
     this.playableMask = new Uint8Array(this.totalCells);
+    this.completionMask = new Uint8Array(this.totalCells);
 
     let playableCellCount = 0;
+    let completionCellCount = 0;
     for (let gy = 0; gy < this.height; gy++) {
       for (let gx = 0; gx < this.width; gx++) {
         const point = gridToWorld(gx, gy);
         if (!isPointInsideArena(point.x, point.y)) continue;
-        this.playableMask[gy * this.width + gx] = 1;
+        const index = gy * this.width + gx;
+        this.playableMask[index] = 1;
         playableCellCount++;
+        if (isPointInsideArena(point.x, point.y, PLAYER_RADIUS)) {
+          this.completionMask[index] = 1;
+          completionCellCount++;
+        }
       }
     }
     this.playableCellCount = playableCellCount;
+    this.completionCellCount = completionCellCount;
   }
 
   registerPlayer(playerId: string): number {
@@ -369,7 +381,14 @@ export class TerritoryGrid {
 
   getTerritoryPercent(playerId: string): number {
     const count = this.countTerritoryCells(playerId);
-    return Number(((count / this.playableCellCount) * 100).toFixed(2));
+    if (count >= this.playableCellCount) return 100;
+
+    // Keep the two-decimal HUD from displaying 100% while even one
+    // authoritative playable cell is still unclaimed.
+    return Math.min(
+      99.99,
+      Number(((count / this.playableCellCount) * 100).toFixed(2))
+    );
   }
 
   countNeutralCells(): number {
@@ -378,6 +397,41 @@ export class TerritoryGrid {
       if (this.playableMask[i] === 1 && this.cells[i] === 0) count++;
     }
     return count;
+  }
+
+  /**
+   * Complete the visible island once a player owns the safe interior core and
+   * no rival owns any remaining land. Neutral edge cells can straddle the
+   * movement boundary because world positions map into square grid cells; the
+   * final pass awards that residual coastline without stealing rival territory.
+   */
+  tryFinalizeMapOccupation(playerId: string): boolean {
+    const playerIndex = this.playerIndices.get(playerId);
+    if (!playerIndex || this.completionCellCount === 0) return false;
+
+    for (let index = 0; index < this.totalCells; index++) {
+      if (
+        this.completionMask[index] === 1 &&
+        this.cells[index] !== playerIndex
+      ) {
+        return false;
+      }
+    }
+
+    for (let index = 0; index < this.totalCells; index++) {
+      if (
+        this.playableMask[index] === 1 &&
+        this.cells[index] !== 0 &&
+        this.cells[index] !== playerIndex
+      ) {
+        return false;
+      }
+    }
+
+    for (let index = 0; index < this.totalCells; index++) {
+      if (this.playableMask[index] === 1) this.cells[index] = playerIndex;
+    }
+    return true;
   }
 
   /**
@@ -406,7 +460,9 @@ export class TerritoryGrid {
 
     const trailMask = new Uint8Array(this.totalCells);
 
-    // Rasterize trail segments using Bresenham algorithm
+    // Rasterize trail segments as a 4-connected grid path. Keeping diagonal
+    // steps edge-connected prevents the territory contour from splitting one
+    // captured trail into a chain of dots and short capsules.
     for (let i = 0; i < trail.length - 1; i++) {
       const p1 = worldToGrid(trail[i].x, trail[i].y);
       const p2 = worldToGrid(trail[i + 1].x, trail[i + 1].y);
@@ -539,10 +595,7 @@ export class TerritoryGrid {
       }
     });
 
-    const totalCellsOwned = this.countTerritoryCells(playerId);
-    const newPercent = Number(
-      ((totalCellsOwned / this.playableCellCount) * 100).toFixed(2)
-    );
+    const newPercent = this.getTerritoryPercent(playerId);
     const centerX = capturedCount > 0 ? sumX / capturedCount : 0;
     const centerY = capturedCount > 0 ? sumY / capturedCount : 0;
 
@@ -555,32 +608,89 @@ export class TerritoryGrid {
     };
   }
 
-  /** Rasterize line using Bresenham algorithm */
-  private rasterizeLine(x0: number, y0: number, x1: number, y1: number, mask: Uint8Array) {
-    let dx = Math.abs(x1 - x0);
-    let dy = Math.abs(y1 - y0);
-    let sx = x0 < x1 ? 1 : -1;
-    let sy = y0 < y1 ? 1 : -1;
-    let err = dx - dy;
+  private markRasterCell(x: number, y: number, mask: Uint8Array) {
+    if (x < 0 || x >= this.width || y < 0 || y >= this.height) return;
+    const index = y * this.width + x;
+    if (this.playableMask[index] === 1) mask[index] = 1;
+  }
 
+  /**
+   * Rasterize a line through cell centers as one 4-connected path.
+   *
+   * A normal Bresenham diagonal can move x and y at once, leaving consecutive
+   * cells touching only at a corner. Marching Squares treats that saddle as two
+   * contours. Crossing grid boundaries in geometric order avoids those gaps.
+   * Exact corner crossings add one deterministic bridge cell; the lexicographic
+   * choice is direction-independent, so reversing a segment yields the same
+   * ownership cells without widening every corner into a 2x2 block.
+   */
+  private rasterizeLine(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    mask: Uint8Array
+  ) {
+    const totalXSteps = Math.abs(x1 - x0);
+    const totalYSteps = Math.abs(y1 - y0);
+    const stepX = x0 < x1 ? 1 : -1;
+    const stepY = y0 < y1 ? 1 : -1;
     let x = x0;
     let y = y0;
+    let xSteps = 0;
+    let ySteps = 0;
 
-    while (true) {
-      if (x >= 0 && x < this.width && y >= 0 && y < this.height) {
-        const index = y * this.width + x;
-        if (this.playableMask[index] === 1) mask[index] = 1;
+    this.markRasterCell(x, y, mask);
+
+    while (xSteps < totalXSteps || ySteps < totalYSteps) {
+      if (xSteps === totalXSteps) {
+        y += stepY;
+        ySteps++;
+      } else if (ySteps === totalYSteps) {
+        x += stepX;
+        xSteps++;
+      } else {
+        // Compare the next vertical/horizontal boundary times without floats:
+        // (2*xSteps + 1) / totalXSteps versus
+        // (2*ySteps + 1) / totalYSteps.
+        const nextVerticalCrossing = (2 * xSteps + 1) * totalYSteps;
+        const nextHorizontalCrossing = (2 * ySteps + 1) * totalXSteps;
+
+        if (nextVerticalCrossing < nextHorizontalCrossing) {
+          x += stepX;
+          xSteps++;
+        } else if (nextHorizontalCrossing < nextVerticalCrossing) {
+          y += stepY;
+          ySteps++;
+        } else {
+          const xBridgeX = x + stepX;
+          const xBridgeY = y;
+          const yBridgeX = x;
+          const yBridgeY = y + stepY;
+          const useXBridge =
+            xBridgeY < yBridgeY ||
+            (xBridgeY === yBridgeY && xBridgeX <= yBridgeX);
+          let bridgeX = useXBridge ? xBridgeX : yBridgeX;
+          let bridgeY = useXBridge ? xBridgeY : yBridgeY;
+          const alternateX = useXBridge ? yBridgeX : xBridgeX;
+          const alternateY = useXBridge ? yBridgeY : xBridgeY;
+          if (
+            !this.isPlayableCell(bridgeX, bridgeY) &&
+            this.isPlayableCell(alternateX, alternateY)
+          ) {
+            bridgeX = alternateX;
+            bridgeY = alternateY;
+          }
+          this.markRasterCell(bridgeX, bridgeY, mask);
+
+          x += stepX;
+          y += stepY;
+          xSteps++;
+          ySteps++;
+        }
       }
-      if (x === x1 && y === y1) break;
-      let e2 = 2 * err;
-      if (e2 > -dy) {
-        err -= dy;
-        x += sx;
-      }
-      if (e2 < dx) {
-        err += dx;
-        y += sy;
-      }
+
+      this.markRasterCell(x, y, mask);
     }
   }
 

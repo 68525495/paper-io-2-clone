@@ -5,7 +5,8 @@ export const CELL_SIZE = ARENA_SIZE / GRID_CELLS; // 0.625 world units per cell
 
 export const PLAYER_SPEED = 14.0;
 export const PLAYER_BOOST_SPEED = 20.0;
-export const PLAYER_TURN_SPEED = 8.0; // Snappy turning radius
+// Must match the client predictor. 90 degrees takes ~112 ms.
+export const PLAYER_TURN_SPEED = 14.0;
 export const PLAYER_RADIUS = 1.2;
 export const TRAIL_RADIUS = 0.45;
 export const TRAIL_MIN_SEGMENT_DIST = 0.55;

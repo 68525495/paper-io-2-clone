@@ -20,6 +20,12 @@ export class InputController {
   private touchId: number | null = null;
   private touchOriginX: number = 0;
   private touchOriginY: number = 0;
+  private pendingKnobX: number = 0;
+  private pendingKnobY: number = 0;
+  private knobAnimationFrame: number | null = null;
+
+  private static readonly DEAD_ZONE_PX = 6;
+  private static readonly KNOB_RADIUS_PX = 50;
 
   constructor(_canvas: HTMLCanvasElement) {
     // Create joystick visual elements
@@ -32,9 +38,82 @@ export class InputController {
     this.joystickBase.appendChild(this.joystickKnob);
     this.joystickZone.appendChild(this.joystickBase);
 
-    this.setupTouchListeners();
+    if ("PointerEvent" in window) this.setupPointerListeners();
+    else this.setupTouchListeners();
     this.setupKeyboardListeners();
     this.setupMouseListeners();
+  }
+
+  private beginTouch(id: number, clientX: number, clientY: number): boolean {
+    if (this.touchId !== null) return false;
+    this.touchId = id;
+    this.touchOriginX = clientX;
+    this.touchOriginY = clientY;
+    this.isTouching = true;
+
+    this.joystickBase.style.display = "block";
+    this.joystickBase.style.left = `${clientX}px`;
+    this.joystickBase.style.top = `${clientY}px`;
+    this.joystickKnob.style.transform = "translate3d(-50%, -50%, 0)";
+    return true;
+  }
+
+  private updateTouch(id: number, clientX: number, clientY: number) {
+    if (id !== this.touchId) return;
+
+    const dx = clientX - this.touchOriginX;
+    const dy = clientY - this.touchOriginY;
+    const distance = Math.hypot(dx, dy);
+    if (distance <= InputController.DEAD_ZONE_PX) return;
+
+    // Update gameplay input immediately. Only the decorative knob is batched.
+    this.targetAngle = Math.atan2(-dy, dx);
+    const clampedDistance = Math.min(
+      distance,
+      InputController.KNOB_RADIUS_PX
+    );
+    this.pendingKnobX = (dx / distance) * clampedDistance;
+    this.pendingKnobY = (dy / distance) * clampedDistance;
+    if (this.knobAnimationFrame !== null) return;
+
+    this.knobAnimationFrame = requestAnimationFrame(() => {
+      this.knobAnimationFrame = null;
+      this.joystickKnob.style.transform =
+        `translate3d(calc(-50% + ${this.pendingKnobX}px), ` +
+        `calc(-50% + ${this.pendingKnobY}px), 0)`;
+    });
+  }
+
+  private endTouch(id: number) {
+    if (id !== this.touchId) return;
+    this.touchId = null;
+    this.isTouching = false;
+    this.joystickBase.style.display = "none";
+  }
+
+  private setupPointerListeners() {
+    const zone = this.joystickZone;
+
+    zone.addEventListener("pointerdown", (event: PointerEvent) => {
+      if (event.pointerType === "mouse") return;
+      event.preventDefault();
+      if (!this.beginTouch(event.pointerId, event.clientX, event.clientY)) return;
+      zone.setPointerCapture(event.pointerId);
+    });
+
+    zone.addEventListener("pointermove", (event: PointerEvent) => {
+      if (event.pointerId !== this.touchId) return;
+      const samples = event.getCoalescedEvents?.() ?? [];
+      const latest = samples[samples.length - 1] ?? event;
+      this.updateTouch(event.pointerId, latest.clientX, latest.clientY);
+    });
+
+    const onPointerEnd = (event: PointerEvent) => {
+      this.endTouch(event.pointerId);
+    };
+    zone.addEventListener("pointerup", onPointerEnd);
+    zone.addEventListener("pointercancel", onPointerEnd);
+    zone.addEventListener("lostpointercapture", onPointerEnd);
   }
 
   private setupTouchListeners() {
@@ -42,19 +121,8 @@ export class InputController {
 
     zone.addEventListener("touchstart", (e: TouchEvent) => {
       e.preventDefault();
-      if (this.touchId !== null) return; // already tracking a finger
       const touch = e.changedTouches[0];
-      this.touchId = touch.identifier;
-      this.touchOriginX = touch.clientX;
-      this.touchOriginY = touch.clientY;
-      this.isTouching = true;
-
-      // Show joystick base at touch point
-      this.joystickBase.style.display = "block";
-      this.joystickBase.style.left = `${touch.clientX}px`;
-      this.joystickBase.style.top = `${touch.clientY}px`;
-      // Reset knob to center
-      this.joystickKnob.style.transform = "translate(-50%, -50%)";
+      this.beginTouch(touch.identifier, touch.clientX, touch.clientY);
     }, { passive: false });
 
     zone.addEventListener("touchmove", (e: TouchEvent) => {
@@ -62,23 +130,7 @@ export class InputController {
       for (let i = 0; i < e.changedTouches.length; i++) {
         const touch = e.changedTouches[i];
         if (touch.identifier !== this.touchId) continue;
-
-        const dx = touch.clientX - this.touchOriginX;
-        const dy = touch.clientY - this.touchOriginY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        if (dist > 8) {
-          // Calculate angle: screen Y down → game Y up
-          this.targetAngle = Math.atan2(-dy, dx);
-
-          // Clamp knob visual within base radius (60px)
-          const maxR = 50;
-          const clampedDist = Math.min(dist, maxR);
-          const normDx = (dx / dist) * clampedDist;
-          const normDy = (dy / dist) * clampedDist;
-          this.joystickKnob.style.transform =
-            `translate(calc(-50% + ${normDx}px), calc(-50% + ${normDy}px))`;
-        }
+        this.updateTouch(touch.identifier, touch.clientX, touch.clientY);
         break;
       }
     }, { passive: false });
@@ -86,9 +138,7 @@ export class InputController {
     const onTouchEnd = (e: TouchEvent) => {
       for (let i = 0; i < e.changedTouches.length; i++) {
         if (e.changedTouches[i].identifier === this.touchId) {
-          this.touchId = null;
-          this.isTouching = false;
-          this.joystickBase.style.display = "none";
+          this.endTouch(e.changedTouches[i].identifier);
           break;
         }
       }
@@ -141,6 +191,9 @@ export class InputController {
   }
 
   destroy() {
-    // Clean up if needed
+    if (this.knobAnimationFrame !== null) {
+      cancelAnimationFrame(this.knobAnimationFrame);
+      this.knobAnimationFrame = null;
+    }
   }
 }

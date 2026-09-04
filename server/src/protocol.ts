@@ -111,10 +111,13 @@ export function decodeGridSync(message: FullGridSyncMessage): Uint8Array {
   return decoded;
 }
 
+export type VictoryReason = "map_occupied" | "last_survivor";
+
 export interface GameOverMessage {
   winnerId: string;
   winnerName: string;
   winnerColor: string;
   winnerPercent: number;
   winnerKills: number;
+  victoryReason?: VictoryReason;
 }

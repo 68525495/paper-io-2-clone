@@ -5,7 +5,9 @@ export const CELL_SIZE = ARENA_SIZE / GRID_CELLS; // 0.625 world units per cell
 
 export const PLAYER_SPEED = 14.0;
 export const PLAYER_BOOST_SPEED = 20.0;
-export const PLAYER_TURN_SPEED = 8.0;
+// 90 degrees in ~112 ms: responsive on touch without making direction changes
+// instantaneous or diverging from the authoritative server simulation.
+export const PLAYER_TURN_SPEED = 14.0;
 export const PLAYER_RADIUS = 1.2;
 export const TRAIL_RADIUS = 0.45;
 export const INITIAL_BASE_RADIUS_CELLS = 9;

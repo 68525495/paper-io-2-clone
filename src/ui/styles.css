@@ -250,6 +250,16 @@ html, body {
   background: #EAF3FD;
 }
 
+.territory-icon {
+  background: #E8F8F1;
+  font-size: 12px;
+}
+
+.territory-value {
+  min-width: 48px;
+  font-variant-numeric: tabular-nums;
+}
+
 .coin-icon-gold {
   background: #FEF6D9;
 }
@@ -529,6 +539,264 @@ html, body {
 }
 
 /* =========================================
+   Match Result / Victory Page
+   ========================================= */
+.game-over-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding:
+    max(20px, env(safe-area-inset-top, 0px))
+    max(18px, env(safe-area-inset-right, 0px))
+    max(20px, env(safe-area-inset-bottom, 0px))
+    max(18px, env(safe-area-inset-left, 0px));
+  background:
+    radial-gradient(circle at 50% 26%, rgba(255, 240, 154, 0.5), transparent 32%),
+    linear-gradient(155deg, rgba(52, 39, 122, 0.88), rgba(28, 17, 67, 0.94));
+  pointer-events: auto;
+  backdrop-filter: blur(10px);
+}
+
+.game-over-card {
+  --winner-color: #6350E5;
+  position: relative;
+  isolation: isolate;
+  width: min(100%, 350px);
+  flex: 0 0 auto;
+  margin: auto;
+  overflow: hidden;
+  padding: 30px 24px 24px;
+  border: 3px solid rgba(255, 255, 255, 0.92);
+  border-radius: 30px;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFFDF5 100%);
+  box-shadow: 0 22px 60px rgba(16, 10, 48, 0.42);
+  box-shadow:
+    0 22px 60px rgba(16, 10, 48, 0.42),
+    0 0 0 7px color-mix(in srgb, var(--winner-color) 24%, transparent);
+  text-align: center;
+  animation: resultRise 0.5s cubic-bezier(0.2, 1.25, 0.38, 1) both;
+}
+
+.game-over-halo {
+  position: absolute;
+  z-index: -1;
+  top: -118px;
+  left: 50%;
+  width: 270px;
+  height: 270px;
+  border-radius: 50%;
+  background:
+    repeating-conic-gradient(
+      from 0deg,
+      color-mix(in srgb, var(--winner-color) 22%, transparent) 0deg 10deg,
+      transparent 10deg 22deg
+    );
+  transform: translateX(-50%);
+  opacity: 0.85;
+}
+
+.game-over-trophy {
+  font-size: 66px;
+  line-height: 1;
+  filter: drop-shadow(0 7px 4px rgba(115, 73, 0, 0.22));
+  animation: trophyBounce 0.7s 0.18s cubic-bezier(0.2, 1.45, 0.4, 1) both;
+}
+
+.game-over-kicker {
+  margin-top: 13px;
+  color: #5B48CB;
+  color: color-mix(in srgb, var(--winner-color) 42%, #4A356C);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.7px;
+}
+
+.game-over-title {
+  margin-top: 3px;
+  color: #2D2557;
+  font-family: 'Fredoka', 'Outfit', sans-serif;
+  font-size: clamp(35px, 10vw, 46px);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  text-shadow: 0 3px 0 rgba(99, 80, 229, 0.12);
+}
+
+.game-over-message {
+  min-height: 38px;
+  margin: 11px auto 16px;
+  color: #6B6880;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.game-over-progress,
+.game-over-stat {
+  border: 1px solid rgba(99, 80, 229, 0.1);
+  border-radius: 16px;
+  background: #F7F6FC;
+}
+
+.game-over-progress {
+  padding: 12px 14px 14px;
+}
+
+.game-over-progress-head,
+.game-over-stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.game-over-progress-head span,
+.game-over-stat span {
+  color: #74708B;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+}
+
+.game-over-percent,
+.game-over-kills {
+  color: #2D2557;
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.game-over-progress-track {
+  height: 9px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #E8E5F2;
+}
+
+.game-over-progress-fill {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: #6350E5;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--winner-color) 72%, #ffffff),
+    var(--winner-color)
+  );
+  box-shadow: 0 0 12px color-mix(in srgb, var(--winner-color) 45%, transparent);
+  transform-origin: left;
+  animation: fillTerritory 0.8s 0.28s ease-out both;
+}
+
+.game-over-stat {
+  margin-top: 9px;
+  padding: 10px 14px;
+}
+
+.game-over-button {
+  width: 100%;
+  min-height: 50px;
+  margin-top: 17px;
+  border: 0;
+  border-radius: 17px;
+  background: linear-gradient(135deg, #6C56E8, #4432A8);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--winner-color) 38%, #5B48CB),
+    color-mix(in srgb, var(--winner-color) 30%, #302474)
+  );
+  box-shadow: 0 6px 0 #2D2466, 0 10px 22px rgba(48, 36, 116, 0.3);
+  box-shadow:
+    0 6px 0 color-mix(in srgb, var(--winner-color) 22%, #21194F),
+    0 10px 22px color-mix(in srgb, var(--winner-color) 18%, transparent);
+  color: #FFFFFF;
+  cursor: pointer;
+  font-family: 'Outfit', sans-serif;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+
+.game-over-button:active {
+  transform: translateY(4px);
+  box-shadow: 0 2px 0 #2D2466, 0 4px 10px rgba(48, 36, 116, 0.25);
+  box-shadow:
+    0 2px 0 color-mix(in srgb, var(--winner-color) 22%, #21194F),
+    0 4px 10px color-mix(in srgb, var(--winner-color) 15%, transparent);
+}
+
+.game-over-button:focus-visible {
+  outline: 3px solid #FFFFFF;
+  outline-offset: 3px;
+}
+
+.defeat-result .game-over-halo {
+  opacity: 0.4;
+}
+
+.game-over-confetti {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.game-over-confetti i {
+  position: absolute;
+  top: -12%;
+  left: 10%;
+  width: 9px;
+  height: 20px;
+  border-radius: 3px;
+  background: #FFD93D;
+  animation: confettiFall 2.9s linear infinite;
+}
+
+.game-over-confetti i:nth-child(2) { left: 22%; background: #FF6B9D; animation-delay: -1.8s; transform: rotate(31deg); }
+.game-over-confetti i:nth-child(3) { left: 34%; background: #6EE7B7; animation-delay: -0.6s; }
+.game-over-confetti i:nth-child(4) { left: 46%; background: #93C5FD; animation-delay: -2.3s; transform: rotate(62deg); }
+.game-over-confetti i:nth-child(5) { left: 58%; background: #C4B5FD; animation-delay: -1.2s; }
+.game-over-confetti i:nth-child(6) { left: 70%; background: #FCA5A5; animation-delay: -2.6s; transform: rotate(45deg); }
+.game-over-confetti i:nth-child(7) { left: 82%; background: #FDE68A; animation-delay: -0.25s; }
+.game-over-confetti i:nth-child(8) { left: 92%; background: #5EEAD4; animation-delay: -1.45s; transform: rotate(73deg); }
+
+@keyframes resultRise {
+  from { opacity: 0; transform: translateY(28px) scale(0.86); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes trophyBounce {
+  from { opacity: 0; transform: translateY(-18px) scale(0.35) rotate(-12deg); }
+  to { opacity: 1; transform: translateY(0) scale(1) rotate(0deg); }
+}
+
+@keyframes fillTerritory {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+@keyframes confettiFall {
+  0% { translate: 0 -10vh; rotate: 0deg; opacity: 0; }
+  12% { opacity: 1; }
+  100% { translate: 46px 120vh; rotate: 520deg; opacity: 0.85; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .game-over-card,
+  .game-over-trophy,
+  .game-over-progress-fill,
+  .game-over-confetti i {
+    animation: none;
+  }
+}
+
+/* =========================================
    Landscape tweaks on small screens
    ========================================= */
 @media (min-aspect-ratio: 4/3) {
@@ -547,5 +815,32 @@ html, body {
     display: grid;
     grid-auto-flow: column;
     grid-template-rows: repeat(5, max-content);
+  }
+
+  .game-over-card {
+    width: min(100%, 560px);
+    padding: 18px 22px 16px;
+  }
+
+  .game-over-trophy {
+    font-size: 42px;
+  }
+
+  .game-over-kicker {
+    margin-top: 7px;
+  }
+
+  .game-over-title {
+    font-size: 32px;
+  }
+
+  .game-over-message {
+    min-height: 0;
+    margin: 7px auto 9px;
+  }
+
+  .game-over-button {
+    min-height: 44px;
+    margin-top: 10px;
   }
 }

@@ -26,7 +26,7 @@ export interface SentInputSample {
   clientTime: number;
 }
 
-const INPUT_SEND_INTERVAL_MS = 1000 / 30;
+const CHANGED_INPUT_SEND_INTERVAL_MS = 1000 / 60;
 const INPUT_HEARTBEAT_MS = 250;
 const INPUT_ANGLE_EPSILON = 0.0025;
 
@@ -199,7 +199,10 @@ export class GameClient {
       !Number.isFinite(this.lastSentTargetAngle) ||
       angleDistance(this.lastSentTargetAngle, normalizedAngle) >= INPUT_ANGLE_EPSILON ||
       boost !== this.lastSentBoost;
-    if (elapsed < INPUT_SEND_INTERVAL_MS || (!inputChanged && elapsed < INPUT_HEARTBEAT_MS)) {
+    const sendInterval = inputChanged
+      ? CHANGED_INPUT_SEND_INTERVAL_MS
+      : INPUT_HEARTBEAT_MS;
+    if (elapsed < sendInterval) {
       return null;
     }
 

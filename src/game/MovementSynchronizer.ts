@@ -1,5 +1,6 @@
 import { constrainPointToArena } from "../shared/arenaShape.js";
 import { PLAYER_RADIUS, PLAYER_TURN_SPEED } from "../shared/constants.js";
+import { advanceTurningPose } from "../shared/movement.js";
 import type { GameState, PlayerState } from "../shared/schema.js";
 
 interface LocalInputSample {
@@ -34,8 +35,7 @@ interface LocalPrediction extends RenderPose {
   lifeId: number;
   visualOffsetX: number;
   visualOffsetY: number;
-  visualAngleOffset: number;
-  lastClientTime: number;
+  lastFrameTime: number;
   lastReconciledTick: number;
   lastReconciledServerTime: number;
 }
@@ -43,11 +43,12 @@ interface LocalPrediction extends RenderPose {
 const REMOTE_INTERPOLATION_DELAY_MS = 100;
 const MAX_REMOTE_EXTRAPOLATION_MS = 100;
 const MAX_LOCAL_PROJECTION_MS = 150;
-const LOCAL_CORRECTION_RATE = 12;
+const LOCAL_POSITION_DEAD_ZONE = 0.12;
+const LOCAL_CORRECTION_RATE = 10;
+const LOCAL_MAX_CORRECTION_SPEED = 2.5;
 const LOCAL_HARD_SNAP_DISTANCE = 8;
 const MAX_SNAPSHOTS_PER_PLAYER = 32;
 const MAX_INPUT_HISTORY = 96;
-const SIMULATION_SUBSTEP_SECONDS = 1 / 60;
 
 function finiteOr(value: number, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
@@ -83,17 +84,16 @@ function advancePredictedPose(
   speed: number,
   durationSeconds: number
 ) {
-  let remaining = Math.max(0, durationSeconds);
-  while (remaining > 1e-6) {
-    const step = Math.min(remaining, SIMULATION_SUBSTEP_SECONDS);
-    pose.angle = stepAngle(pose.angle, targetAngle, PLAYER_TURN_SPEED * step);
-    const nextX = pose.x + Math.cos(pose.angle) * speed * step;
-    const nextY = pose.y + Math.sin(pose.angle) * speed * step;
-    const constrained = constrainPointToArena(nextX, nextY, PLAYER_RADIUS);
-    pose.x = constrained.x;
-    pose.y = constrained.y;
-    remaining -= step;
-  }
+  advanceTurningPose(
+    pose,
+    targetAngle,
+    speed,
+    PLAYER_TURN_SPEED,
+    durationSeconds
+  );
+  const constrained = constrainPointToArena(pose.x, pose.y, PLAYER_RADIUS);
+  pose.x = constrained.x;
+  pose.y = constrained.y;
 }
 
 /**
@@ -180,7 +180,8 @@ export class MovementSynchronizer {
     playerId: string,
     fallback: PlayerState,
     isLocal: boolean,
-    clientTime: number = Date.now()
+    clientTime: number = Date.now(),
+    frameTime: number = clientTime
   ): RenderPose {
     const history = this.snapshots.get(playerId);
     const latest = history?.[history.length - 1] ?? this.createSnapshot(
@@ -191,7 +192,7 @@ export class MovementSynchronizer {
 
     if (isLocal) {
       if (this.localPlayerId !== playerId) this.setLocalPlayer(playerId);
-      return this.sampleLocal(latest, clientTime);
+      return this.sampleLocal(latest, clientTime, frameTime);
     }
     return this.sampleRemote(history ?? [latest], clientTime + this.serverClockOffsetMs);
   }
@@ -301,7 +302,11 @@ export class MovementSynchronizer {
     return projected;
   }
 
-  private sampleLocal(snapshot: PlayerSnapshot, clientTime: number): RenderPose {
+  private sampleLocal(
+    snapshot: PlayerSnapshot,
+    clientTime: number,
+    frameTime: number
+  ): RenderPose {
     if (!this.localPrediction) {
       const projected = this.projectLocalSnapshot(snapshot, clientTime);
       this.localPrediction = {
@@ -311,34 +316,39 @@ export class MovementSynchronizer {
         lifeId: snapshot.lifeId,
         visualOffsetX: 0,
         visualOffsetY: 0,
-        visualAngleOffset: 0,
-        lastClientTime: clientTime,
+        lastFrameTime: frameTime,
         lastReconciledTick: snapshot.serverTick,
         lastReconciledServerTime: snapshot.serverTime,
       };
     } else {
-      this.advanceLocalPrediction(clientTime);
+      this.advanceLocalPrediction(frameTime);
       const prediction = this.localPrediction;
       const hasNewSnapshot =
         snapshot.serverTick > prediction.lastReconciledTick ||
         snapshot.serverTime > prediction.lastReconciledServerTime ||
         snapshot.lifeId !== prediction.lifeId ||
         snapshot.alive !== prediction.alive;
-      if (hasNewSnapshot) this.reconcileLocalPrediction(snapshot, clientTime);
+      if (hasNewSnapshot) {
+        this.reconcileLocalPrediction(snapshot, clientTime, frameTime);
+      }
     }
 
     const prediction = this.localPrediction;
     return {
       x: prediction.x + prediction.visualOffsetX,
       y: prediction.y + prediction.visualOffsetY,
-      angle: normalizeAngle(prediction.angle + prediction.visualAngleOffset),
+      angle: prediction.angle,
     };
   }
 
-  private advanceLocalPrediction(clientTime: number) {
+  private advanceLocalPrediction(frameTime: number) {
     const prediction = this.localPrediction;
     if (!prediction) return;
-    const elapsedSeconds = clamp((clientTime - prediction.lastClientTime) / 1000, 0, 0.1);
+    const elapsedSeconds = clamp(
+      (frameTime - prediction.lastFrameTime) / 1000,
+      0,
+      0.1
+    );
     if (prediction.alive && elapsedSeconds > 0) {
       advancePredictedPose(
         prediction,
@@ -347,48 +357,71 @@ export class MovementSynchronizer {
         elapsedSeconds
       );
     }
-    const decay = Math.exp(-LOCAL_CORRECTION_RATE * elapsedSeconds);
-    prediction.visualOffsetX *= decay;
-    prediction.visualOffsetY *= decay;
-    prediction.visualAngleOffset *= decay;
-    prediction.lastClientTime = clientTime;
+    const offsetLength = Math.hypot(
+      prediction.visualOffsetX,
+      prediction.visualOffsetY
+    );
+    if (offsetLength > 1e-8) {
+      const exponentialRemoval =
+        offsetLength * (1 - Math.exp(-LOCAL_CORRECTION_RATE * elapsedSeconds));
+      const removal = Math.min(
+        offsetLength,
+        exponentialRemoval,
+        LOCAL_MAX_CORRECTION_SPEED * elapsedSeconds
+      );
+      const remainingScale = (offsetLength - removal) / offsetLength;
+      prediction.visualOffsetX *= remainingScale;
+      prediction.visualOffsetY *= remainingScale;
+    }
+    prediction.lastFrameTime = frameTime;
   }
 
-  private reconcileLocalPrediction(snapshot: PlayerSnapshot, clientTime: number) {
+  private reconcileLocalPrediction(
+    snapshot: PlayerSnapshot,
+    clientTime: number,
+    frameTime: number
+  ) {
     const prediction = this.localPrediction;
     if (!prediction) return;
 
     const oldVisualX = prediction.x + prediction.visualOffsetX;
     const oldVisualY = prediction.y + prediction.visualOffsetY;
-    const oldVisualAngle = normalizeAngle(prediction.angle + prediction.visualAngleOffset);
+    const oldLocalAngle = prediction.angle;
     const projected = this.projectLocalSnapshot(snapshot, clientTime);
-    const distance = Math.hypot(projected.x - prediction.x, projected.y - prediction.y);
+    const distance = Math.hypot(
+      projected.x - oldVisualX,
+      projected.y - oldVisualY
+    );
     const mustSnap =
       snapshot.lifeId !== prediction.lifeId ||
       snapshot.alive !== prediction.alive ||
       distance > LOCAL_HARD_SNAP_DISTANCE;
 
-    prediction.x = projected.x;
-    prediction.y = projected.y;
-    prediction.angle = projected.angle;
+    if (mustSnap) {
+      prediction.x = projected.x;
+      prediction.y = projected.y;
+      prediction.angle = projected.angle;
+      prediction.visualOffsetX = 0;
+      prediction.visualOffsetY = 0;
+    } else {
+      // Ignore visually tiny errors instead of injecting a correction pulse on
+      // every state patch. Drift is still bounded because accumulated error is
+      // reconciled as soon as it leaves this sub-pixel-scale dead zone.
+      if (distance > LOCAL_POSITION_DEAD_ZONE) {
+        prediction.x = projected.x;
+        prediction.y = projected.y;
+        prediction.visualOffsetX = oldVisualX - projected.x;
+        prediction.visualOffsetY = oldVisualY - projected.y;
+      }
+      // Local heading follows the latest joystick rather than a delayed patch.
+      prediction.angle = oldLocalAngle;
+    }
     prediction.speed = snapshot.speed;
     prediction.alive = snapshot.alive;
     prediction.lifeId = snapshot.lifeId;
-    prediction.lastClientTime = clientTime;
+    prediction.lastFrameTime = frameTime;
     prediction.lastReconciledTick = snapshot.serverTick;
     prediction.lastReconciledServerTime = snapshot.serverTime;
-
-    if (mustSnap) {
-      prediction.visualOffsetX = 0;
-      prediction.visualOffsetY = 0;
-      prediction.visualAngleOffset = 0;
-    } else {
-      // Preserve the exact visible pose at packet arrival, then remove only the
-      // correction offset over subsequent render frames.
-      prediction.visualOffsetX = oldVisualX - projected.x;
-      prediction.visualOffsetY = oldVisualY - projected.y;
-      prediction.visualAngleOffset = angleDifference(projected.angle, oldVisualAngle);
-    }
 
     this.localInputHistory = this.localInputHistory.filter(
       (input) => input.seq > snapshot.lastProcessedInputSeq
