@@ -20,6 +20,7 @@ import { TerritoryGrid } from "../territory.js";
 interface PaperRoomInternals {
   grid: TerritoryGrid;
   playerTrails: Map<string, TrailPoint[]>;
+  tickCount: number;
   bots: Map<string, BotController>;
   botRespawnAt: Map<string, number>;
   isGameOver: boolean;
@@ -310,6 +311,54 @@ describe("PaperRoom authoritative regressions", () => {
 
     internals.playerTrails.set(player.id, []);
     expect(internals.buildFullTrailSync()[player.id]).toBeUndefined();
+  });
+
+  it("broadcasts the first trail point immediately, then resumes the 3 Hz cadence", () => {
+    const { internals, broadcastSpy } = createRoomHarness();
+    const player = internals.spawnPlayer("trail-starter", "Starter", false);
+    internals.grid.clearPlayerTerritory(player.id);
+
+    internals.tickCount = 1;
+    internals.updateInner(0);
+
+    const immediateCalls = broadcastSpy.mock.calls.filter(
+      ([type]) => type === "trail_sync"
+    );
+    expect(immediateCalls).toHaveLength(1);
+    expect(immediateCalls[0][1]).toEqual(internals.buildFullTrailSync());
+
+    broadcastSpy.mockClear();
+    internals.tickCount = 2;
+    internals.updateInner(0);
+    expect(
+      broadcastSpy.mock.calls.filter(([type]) => type === "trail_sync")
+    ).toHaveLength(0);
+
+    internals.tickCount = 10;
+    internals.updateInner(0);
+    expect(
+      broadcastSpy.mock.calls.filter(([type]) => type === "trail_sync")
+    ).toHaveLength(1);
+  });
+
+  it("coalesces simultaneous trail starts with a periodic sync", () => {
+    const { internals, broadcastSpy } = createRoomHarness();
+    const first = internals.spawnPlayer("first-starter", "First", false);
+    const second = internals.spawnPlayer("second-starter", "Second", false);
+    internals.grid.clearPlayerTerritory(first.id);
+    internals.grid.clearPlayerTerritory(second.id);
+
+    internals.tickCount = 10;
+    internals.updateInner(0);
+
+    const trailSyncCalls = broadcastSpy.mock.calls.filter(
+      ([type]) => type === "trail_sync"
+    );
+    expect(trailSyncCalls).toHaveLength(1);
+    expect(trailSyncCalls[0][1]).toEqual(internals.buildFullTrailSync());
+    expect(Object.keys(trailSyncCalls[0][1] as object)).toEqual(
+      expect.arrayContaining([first.id, second.id])
+    );
   });
 
   it("keeps repeated spawns and their complete bases inside the organic arena", () => {

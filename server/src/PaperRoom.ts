@@ -439,6 +439,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
     // 2. Update all living players movement & trails
     const playerIds: string[] = [];
+    let trailStartedThisTick = false;
     this.state.players.forEach((_p, id) => playerIds.push(id));
 
     for (const playerId of playerIds) {
@@ -518,6 +519,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
         }
 
         if (shouldAddPoint) {
+          if (trail.length === 0) trailStartedThisTick = true;
           trail.push(new TrailPoint(player.x, player.y));
           this.playerTrails.set(player.id, trail);
         }
@@ -542,10 +544,11 @@ export class PaperRoom extends Room<{ state: GameState }> {
       this.spawnBot();
     }
 
-    // 7. Broadcast a complete packed snapshot (~3Hz). This keeps the wire
-    // format compatible across rolling frontend/backend updates while avoiding
-    // per-point object allocation in mobile WebViews.
-    if (this.tickCount % 10 === 0) {
+    // 7. Send a complete snapshot as soon as any trail starts so clients can
+    // render its head without waiting for the next periodic sync. Aggregate all
+    // starts in this tick into one broadcast; later recovery snapshots stay at
+    // ~3Hz to keep bandwidth and mobile allocation costs bounded.
+    if (trailStartedThisTick || this.tickCount % 10 === 0) {
       this.broadcast("trail_sync", this.buildFullTrailSync());
     }
 

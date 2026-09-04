@@ -25,6 +25,21 @@ describe("TrailRenderer presentation spine", () => {
     engines.length = 0;
   });
 
+  it("renders immediately from one authoritative start point", () => {
+    const engine = new NullEngine();
+    engines.push(engine);
+    const scene = new Scene(engine);
+    const renderer = new TrailRenderer(scene);
+
+    renderer.updateTrail("player", "#00d2ff", [0, 0], 0.1, 0);
+
+    const positions = getTrailPositions(scene);
+    expect(positions.every(Number.isFinite)).toBe(true);
+    const head = getHeadCenter(positions);
+    expect(head[0]).toBeCloseTo(0.1, 5);
+    expect(head[1]).toBeCloseTo(0, 5);
+  });
+
   it("keeps the committed prefix and mesh stable when a network batch grows", () => {
     const engine = new NullEngine();
     engines.push(engine);
