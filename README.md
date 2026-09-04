@@ -2,7 +2,7 @@
 
 复刻 Paper.io 2
 
-![Paper.io 2复刻 游戏画面](artifacts/image.png)
+![Paper.io 2复刻 游戏画面](artifacts/image.jpg)
 
 
 ## 技术栈
