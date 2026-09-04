@@ -190,18 +190,10 @@ export class CharacterRenderer {
 
     char.root.setEnabled(true);
 
-    // Smooth movement interpolation (snap immediately if just spawned or far away)
-    const distSq = (x - char.root.position.x) ** 2 + (z - char.root.position.z) ** 2;
-    if (distSq > 64 || (char.root.position.x === 0 && char.root.position.z === 0)) {
-      char.root.position.x = x;
-      char.root.position.z = z;
-    } else {
-      // Match the old 60 fps response while keeping interpolation consistent
-      // on 30/60/120 Hz displays.
-      const positionBlend = 1 - Math.exp(-30.65 * Math.min(dt, 0.1));
-      char.root.position.x += (x - char.root.position.x) * positionBlend;
-      char.root.position.z += (z - char.root.position.z) * positionBlend;
-    }
+    // Network interpolation/prediction already produced a smooth render pose.
+    // Applying another filter here would reintroduce frame-rate-dependent lag.
+    char.root.position.x = x;
+    char.root.position.z = z;
 
     // Rotate character towards heading angle
     // In Babylon, 2D angle (Math.atan2(dy, dx)) maps to Y rotation (-angle + Math.PI/2)

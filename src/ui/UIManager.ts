@@ -9,12 +9,15 @@ export interface LeaderboardItem {
 
 export class UIManager {
   private killsCountText!: HTMLElement;
+  private latencyText!: HTMLElement;
   private leaderboardContainer!: HTMLElement;
   private deathModal!: HTMLElement;
   private deathReasonText!: HTMLElement;
   private deathStatsText!: HTMLElement;
   private respawnBtn!: HTMLElement;
   private leaderboardSignature = "";
+  private displayedLatency: number | null = null;
+  private displayedKills: number | null = null;
 
   public onRespawnClick: (() => void) | null = null;
 
@@ -25,7 +28,7 @@ export class UIManager {
   private createUIElements() {
     const root = document.getElementById("ui-layer") as HTMLElement;
 
-    // Top-Left Stats (Kills only, no coins)
+    // Top-Left Stats
     const statsContainer = document.createElement("div");
     statsContainer.className = "top-left-stats";
     statsContainer.innerHTML = `
@@ -33,10 +36,15 @@ export class UIManager {
         <div class="stat-icon skull-icon">💀</div>
         <span class="stat-value" id="kills-value">0</span>
       </div>
+      <div class="stat-pill latency-pill" title="Server round-trip latency">
+        <div class="stat-icon latency-icon">📶</div>
+        <span class="stat-value latency-value latency-pending" id="latency-value">-- ms</span>
+      </div>
     `;
     root.appendChild(statsContainer);
 
     this.killsCountText = statsContainer.querySelector("#kills-value") as HTMLElement;
+    this.latencyText = statsContainer.querySelector("#latency-value") as HTMLElement;
 
     // 3. Top-Right Leaderboard
     const lbContainer = document.createElement("div");
@@ -80,7 +88,35 @@ export class UIManager {
   }
 
   updatePlayerStats(percent: number, kills: number, _score: number) {
+    if (kills === this.displayedKills) return;
+    this.displayedKills = kills;
     this.killsCountText.innerText = `${kills}`;
+  }
+
+  updateLatency(roundTripTimeMs: number) {
+    const latency =
+      Number.isFinite(roundTripTimeMs) && roundTripTimeMs > 0
+        ? Math.round(roundTripTimeMs)
+        : null;
+    if (latency === this.displayedLatency) return;
+    this.displayedLatency = latency;
+
+    this.latencyText.textContent = latency === null ? "-- ms" : `${latency} ms`;
+    this.latencyText.classList.remove(
+      "latency-pending",
+      "latency-good",
+      "latency-medium",
+      "latency-poor"
+    );
+    if (latency === null) {
+      this.latencyText.classList.add("latency-pending");
+    } else if (latency <= 80) {
+      this.latencyText.classList.add("latency-good");
+    } else if (latency <= 160) {
+      this.latencyText.classList.add("latency-medium");
+    } else {
+      this.latencyText.classList.add("latency-poor");
+    }
   }
 
   updateLeaderboard(entries: LeaderboardItem[]) {

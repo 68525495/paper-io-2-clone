@@ -53,10 +53,10 @@ export class ParticleEffects {
       const alpha = Math.max(0, 1 - life / maxLife);
       const scale = 1.0 + Math.sin(life * Math.PI) * 0.35;
 
-      el.style.left = `${screenPos.x}px`;
-      el.style.top = `${screenPos.y}px`;
       el.style.opacity = `${alpha}`;
-      el.style.transform = `translate(-50%, -50%) scale(${scale})`;
+      el.style.transform =
+        `translate3d(${screenPos.x}px, ${screenPos.y}px, 0) ` +
+        `translate(-50%, -50%) scale(${scale})`;
 
       if (life < maxLife) {
         requestAnimationFrame(animate);

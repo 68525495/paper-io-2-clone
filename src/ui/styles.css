@@ -208,6 +208,7 @@ html, body {
   top: 50%;
   left: 50%;
   z-index: 17;
+  will-change: transform;
 }
 
 /* =========================================
@@ -253,11 +254,37 @@ html, body {
   background: #FEF6D9;
 }
 
+.latency-icon {
+  background: #E8F5FF;
+  font-size: 12px;
+}
+
 .stat-value {
   color: #294060;
   font-size: 13px;
   font-weight: 800;
   letter-spacing: 0.3px;
+}
+
+.latency-value {
+  min-width: 42px;
+  font-variant-numeric: tabular-nums;
+}
+
+.latency-pending {
+  color: #718096;
+}
+
+.latency-good {
+  color: #16865C;
+}
+
+.latency-medium {
+  color: #B26A00;
+}
+
+.latency-poor {
+  color: #D64242;
 }
 
 /* =========================================
@@ -357,12 +384,28 @@ html, body {
   position: absolute;
   bottom: max(env(safe-area-inset-bottom, 0px), 10px);
   left: 10px;
+  width: 80px;
+  height: 80px;
 }
 
 .minimap-canvas {
-  width: 80px;
-  height: 80px;
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.minimap-territory-layer {
+  z-index: 0;
+  /* This layer changes only with territory, so the shaped shadow can be
+     cached instead of recomputed with moving player dots every frame. */
   filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.12));
+}
+
+.minimap-player-layer {
+  z-index: 1;
 }
 
 /* =========================================
@@ -382,6 +425,19 @@ html, body {
      0px  3px 6px rgba(0,0,0,0.4);
   z-index: 60;
   transform-origin: center center;
+  left: 0;
+  top: 0;
+  will-change: transform, opacity;
+}
+
+/* Backdrop sampling over a continuously changing WebGL canvas is expensive
+   in Android WebView/WKWebView. Opaque HUD fills keep the same readability. */
+@media (hover: none), (pointer: coarse) {
+  .stat-pill,
+  .leaderboard-item {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 /* =========================================
@@ -480,7 +536,7 @@ html, body {
     max-width: 380px;
     top: 10px;
   }
-  .minimap-canvas {
+  .bottom-left-minimap-box {
     width: 110px;
     height: 110px;
   }

@@ -22,7 +22,10 @@ import {
   ARENA_CONTOUR,
   ArenaPoint,
 } from "../shared/arenaShape.js";
-import { extractSmoothedPlayerContours } from "../shared/contour.js";
+import {
+  extractSmoothedPlayerContours,
+  type Point2D,
+} from "../shared/contour.js";
 
 export interface PlayerTerritoryMeta {
   color: string;
@@ -30,6 +33,11 @@ export interface PlayerTerritoryMeta {
   spawnY: number;
   territoryCells: number;
   alive: boolean;
+}
+
+interface CachedTerritoryVisual {
+  contourPath: Path2D | null;
+  basePath: Path2D | null;
 }
 
 export class ArenaRenderer {
@@ -45,6 +53,8 @@ export class ArenaRenderer {
   public rawGrid: Uint8Array;
   public playerColorMap = new Map<number, string>();
   public playerMeta = new Map<number, PlayerTerritoryMeta>();
+  private dirtyPlayerShapes = new Set<number>();
+  private contourCache = new Map<number, CachedTerritoryVisual>();
 
   constructor(scene: Scene) {
     this.cellTexSize = this.textureSize / GRID_CELLS;
@@ -205,6 +215,9 @@ export class ArenaRenderer {
   }
 
   setPlayerColor(playerIndex: number, hexColor: string) {
+    if (this.playerColorMap.get(playerIndex) !== hexColor) {
+      this.dirtyPlayerShapes.add(playerIndex);
+    }
     this.playerColorMap.set(playerIndex, hexColor);
   }
 
@@ -216,6 +229,16 @@ export class ArenaRenderer {
     territoryCells: number,
     alive: boolean
   ) {
+    const previous = this.playerMeta.get(playerIndex);
+    if (
+      !previous ||
+      previous.color !== color ||
+      previous.spawnX !== spawnX ||
+      previous.spawnY !== spawnY ||
+      previous.alive !== alive
+    ) {
+      this.dirtyPlayerShapes.add(playerIndex);
+    }
     this.playerMeta.set(playerIndex, {
       color,
       spawnX,
@@ -226,17 +249,33 @@ export class ArenaRenderer {
     this.playerColorMap.set(playerIndex, color);
   }
 
-  updateGrid(cells: Uint8Array | number[]) {
-    if (cells instanceof Uint8Array) {
-      this.rawGrid.set(cells);
-    } else {
-      this.rawGrid.set(new Uint8Array(cells));
+  updateGrid(cells: Uint8Array | number[]): boolean {
+    let changed = false;
+    for (let index = 0; index < this.rawGrid.length; index++) {
+      const previous = this.rawGrid[index];
+      const next = cells[index] || 0;
+      if (previous === next) continue;
+
+      changed = true;
+      if (previous > 0) this.dirtyPlayerShapes.add(previous);
+      if (next > 0) this.dirtyPlayerShapes.add(next);
+      this.rawGrid[index] = next;
     }
+    return changed;
+  }
+
+  hasPendingTerritoryChanges(): boolean {
+    return this.dirtyPlayerShapes.size > 0;
   }
 
   setCell(gx: number, gy: number, playerIndex: number) {
     if (gx >= 0 && gx < GRID_CELLS && gy >= 0 && gy < GRID_CELLS) {
-      this.rawGrid[gy * GRID_CELLS + gx] = playerIndex;
+      const index = gy * GRID_CELLS + gx;
+      const previous = this.rawGrid[index];
+      if (previous === playerIndex) return;
+      if (previous > 0) this.dirtyPlayerShapes.add(previous);
+      if (playerIndex > 0) this.dirtyPlayerShapes.add(playerIndex);
+      this.rawGrid[index] = playerIndex;
     }
   }
 
@@ -247,6 +286,33 @@ export class ArenaRenderer {
       x: (vx + 0.5) * cs,
       y: this.textureSize - (vy + 0.5) * cs,
     };
+  }
+
+  private buildContourPath(loops: Point2D[][]): Path2D | null {
+    const path = new Path2D();
+    let hasPath = false;
+    for (const loop of loops) {
+      if (loop.length < 3) continue;
+
+      hasPath = true;
+      const first = this.gridSampleToCanvas(loop[0].x, loop[0].y);
+      path.moveTo(first.x, first.y);
+      for (let index = 1; index < loop.length; index++) {
+        const point = this.gridSampleToCanvas(loop[index].x, loop[index].y);
+        path.lineTo(point.x, point.y);
+      }
+      path.closePath();
+    }
+    return hasPath ? path : null;
+  }
+
+  private buildBasePath(center?: { x: number; y: number }): Path2D | null {
+    if (!center) return null;
+    const path = new Path2D();
+    const baseRadius =
+      (INITIAL_BASE_RADIUS_CELLS + 0.1) * this.cellTexSize;
+    path.arc(center.x, center.y, baseRadius, 0, Math.PI * 2);
+    return path;
   }
 
   /**
@@ -392,32 +458,27 @@ export class ArenaRenderer {
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
 
-      const visual = this.createVisualContourGrid(playerIdx, meta);
-      const loops = extractSmoothedPlayerContours(visual.cells, playerIdx, {
-        gridSize: GRID_CELLS,
-        simplifyTolerance: 0.9,
-        chaikinIterations: 3,
-        maxDeviation: 0.8,
-      });
-
-      ctx.beginPath();
-      let hasPath = false;
-      for (const loop of loops) {
-        if (loop.length < 3) continue;
-
-        hasPath = true;
-        const first = this.gridSampleToCanvas(loop[0].x, loop[0].y);
-        ctx.moveTo(first.x, first.y);
-
-        for (let i = 1; i < loop.length; i++) {
-          const pt = this.gridSampleToCanvas(loop[i].x, loop[i].y);
-          ctx.lineTo(pt.x, pt.y);
-        }
-
-        ctx.closePath();
+      let visual = this.contourCache.get(playerIdx);
+      if (!visual || this.dirtyPlayerShapes.has(playerIdx)) {
+        const contourGrid = this.createVisualContourGrid(playerIdx, meta);
+        const loops = extractSmoothedPlayerContours(
+          contourGrid.cells,
+          playerIdx,
+          {
+            gridSize: GRID_CELLS,
+            simplifyTolerance: 0.9,
+            chaikinIterations: 3,
+            maxDeviation: 0.8,
+          }
+        );
+        visual = {
+          contourPath: this.buildContourPath(loops),
+          basePath: this.buildBasePath(contourGrid.baseCenter),
+        };
+        this.contourCache.set(playerIdx, visual);
       }
 
-      if (hasPath) {
+      if (visual.contourPath) {
         // A small texture-space shadow and highlight provide paper-like
         // thickness without changing the authoritative ground geometry.
         ctx.save();
@@ -425,51 +486,41 @@ export class ArenaRenderer {
         ctx.shadowBlur = this.cellTexSize * 0.7;
         ctx.shadowOffsetX = this.cellTexSize * 0.18;
         ctx.shadowOffsetY = this.cellTexSize * 0.28;
-        ctx.fill("evenodd");
+        ctx.fill(visual.contourPath, "evenodd");
         ctx.restore();
 
         ctx.strokeStyle = color;
-        ctx.stroke();
+        ctx.stroke(visual.contourPath);
 
         ctx.save();
         ctx.globalAlpha = 0.2;
         ctx.strokeStyle = "#FFFFFF";
         ctx.lineWidth = Math.max(1.25, this.cellTexSize * 0.18);
-        ctx.stroke();
+        ctx.stroke(visual.contourPath);
         ctx.restore();
       }
 
-      if (visual.baseCenter) {
+      if (visual.basePath) {
         // This path is used only while the base is pristine. Once territory
         // expands, the full grid above produces a single merged silhouette.
         // Match the mean radius of the unified raster contour so the first
         // capture does not visibly pop between the two representations.
-        const baseRadius =
-          (INITIAL_BASE_RADIUS_CELLS + 0.1) * this.cellTexSize;
-        ctx.beginPath();
-        ctx.arc(
-          visual.baseCenter.x,
-          visual.baseCenter.y,
-          baseRadius,
-          0,
-          Math.PI * 2
-        );
         ctx.save();
         ctx.shadowColor = "rgba(15, 23, 42, 0.2)";
         ctx.shadowBlur = this.cellTexSize * 0.7;
         ctx.shadowOffsetX = this.cellTexSize * 0.18;
         ctx.shadowOffsetY = this.cellTexSize * 0.28;
-        ctx.fill();
+        ctx.fill(visual.basePath);
         ctx.restore();
 
         ctx.strokeStyle = color;
-        ctx.stroke();
+        ctx.stroke(visual.basePath);
 
         ctx.save();
         ctx.globalAlpha = 0.2;
         ctx.strokeStyle = "#FFFFFF";
         ctx.lineWidth = Math.max(1.25, this.cellTexSize * 0.18);
-        ctx.stroke();
+        ctx.stroke(visual.basePath);
         ctx.restore();
       }
     }
@@ -484,6 +535,11 @@ export class ArenaRenderer {
     ctx.stroke();
 
     this.territoryTexture.update();
+
+    for (const playerIdx of this.contourCache.keys()) {
+      if (!presentPlayers.has(playerIdx)) this.contourCache.delete(playerIdx);
+    }
+    this.dirtyPlayerShapes.clear();
   }
 
   animateWater(time: number) {

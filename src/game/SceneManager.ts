@@ -19,8 +19,8 @@ export class SceneManager {
 
   constructor(canvas: HTMLCanvasElement) {
     this.engine = new Engine(canvas, true, {
-      preserveDrawingBuffer: true,
-      stencil: true,
+      preserveDrawingBuffer: false,
+      stencil: false,
       antialias: true,
     });
 
@@ -84,20 +84,15 @@ export class SceneManager {
     });
   }
 
-  setCameraTarget(x: number, z: number, smooth: boolean = true) {
-    if (smooth) {
-      // Smooth lerp camera target
-      this.targetPosition.x += (x - this.targetPosition.x) * 0.12;
-      this.targetPosition.z += (z - this.targetPosition.z) * 0.12;
-    } else {
-      this.targetPosition.x = x;
-      this.targetPosition.z = z;
-    }
+  setCameraTarget(x: number, z: number) {
+    // Follow the same already-smoothed pose as the local character. Keeping a
+    // second camera lerp here creates visible relative drift when FPS changes.
+    this.targetPosition.x = x;
+    this.targetPosition.z = z;
     this.camera.target.copyFrom(this.targetPosition);
   }
 
   startRenderLoop(onUpdate: (deltaTime: number) => void) {
-    let frameCount = 0;
     this.engine.runRenderLoop(() => {
       const dt = this.engine.getDeltaTime() / 1000;
       try {
@@ -106,10 +101,6 @@ export class SceneManager {
         console.error("[SceneManager] render loop error:", err);
       }
       this.scene.render();
-      frameCount++;
-      if (frameCount % 300 === 0) {
-        console.log(`[SceneManager] frame ${frameCount}`);
-      }
     });
   }
 

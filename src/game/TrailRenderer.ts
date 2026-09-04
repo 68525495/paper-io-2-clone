@@ -325,12 +325,12 @@ export class TrailRenderer {
 
   private initializePresentationSpine(
     data: TrailData,
-    points: Array<{ x: number; y: number }>,
+    points: ReadonlyArray<number>,
     head: TrailSpinePoint
   ) {
     const networkPoints: TrailSpinePoint[] = [];
-    for (const point of points) {
-      const candidate = { x: point.x, z: point.y };
+    for (let index = 0; index < points.length - 1; index += 2) {
+      const candidate = { x: points[index], z: points[index + 1] };
       const previous = networkPoints[networkPoints.length - 1];
       if (!previous || distanceBetween(previous, candidate) >= MIN_SEGMENT_LENGTH) {
         networkPoints.push(candidate);
@@ -501,11 +501,30 @@ export class TrailRenderer {
       );
     }
 
-    // Static indices cover the full capacity. Repeating the active endpoint
-    // makes every unused body segment degenerate, so appends need no new mesh.
+    // Static indices cover the full capacity. Repeat the active endpoint so
+    // every unused segment becomes degenerate without changing draw ranges.
+    // Scalar writes avoid allocating hundreds of TypedArray subarray views.
     const lastBodyOffset = (spine.length - 1) * 9;
+    const x0 = positions[lastBodyOffset];
+    const y0 = positions[lastBodyOffset + 1];
+    const z0 = positions[lastBodyOffset + 2];
+    const x1 = positions[lastBodyOffset + 3];
+    const y1 = positions[lastBodyOffset + 4];
+    const z1 = positions[lastBodyOffset + 5];
+    const x2 = positions[lastBodyOffset + 6];
+    const y2 = positions[lastBodyOffset + 7];
+    const z2 = positions[lastBodyOffset + 8];
     for (let i = spine.length; i < data.spineCapacity; i++) {
-      positions.set(positions.subarray(lastBodyOffset, lastBodyOffset + 9), i * 9);
+      const offset = i * 9;
+      positions[offset] = x0;
+      positions[offset + 1] = y0;
+      positions[offset + 2] = z0;
+      positions[offset + 3] = x1;
+      positions[offset + 4] = y1;
+      positions[offset + 5] = z1;
+      positions[offset + 6] = x2;
+      positions[offset + 7] = y2;
+      positions[offset + 8] = z2;
     }
 
     const tailBase = data.spineCapacity * 3;
@@ -538,11 +557,11 @@ export class TrailRenderer {
   updateTrail(
     playerId: string,
     colorHex: string,
-    points: Array<{ x: number; y: number }>,
+    points: ReadonlyArray<number>,
     currentHeadX: number,
     currentHeadZ: number
   ) {
-    if (points.length === 0) {
+    if (points.length < 2) {
       this.clearTrail(playerId);
       return;
     }
@@ -554,7 +573,7 @@ export class TrailRenderer {
     }
 
     const head = { x: currentHeadX, z: currentHeadZ };
-    const networkStart = { x: points[0].x, z: points[0].y };
+    const networkStart = { x: points[0], z: points[1] };
     const startChanged = data.networkStart !== null &&
       distanceBetween(data.networkStart, networkStart) > NETWORK_START_RESET_DISTANCE;
     const pointCountRestarted = points.length < data.lastNetworkPointCount;

@@ -31,8 +31,8 @@ describe("TrailRenderer presentation spine", () => {
     const scene = new Scene(engine);
     const renderer = new TrailRenderer(scene);
     let packet = [
-      { x: 0, y: 0 },
-      { x: 0.55, y: 0 },
+      0, 0,
+      0.55, 0,
     ];
 
     for (let frame = 0; frame <= 40; frame++) {
@@ -52,10 +52,10 @@ describe("TrailRenderer presentation spine", () => {
     // This mimics a 3 Hz packet suddenly contributing several bend samples.
     packet = [
       ...packet,
-      { x: 1.3, y: 0.1 },
-      { x: 1.9, y: 0.3 },
-      { x: 2.5, y: 0.7 },
-      { x: 3.0, y: 1.2 },
+      1.3, 0.1,
+      1.9, 0.3,
+      2.5, 0.7,
+      3.0, 1.2,
     ];
     for (let frame = 41; frame <= 60; frame++) {
       const angle = frame * 0.035;
@@ -79,8 +79,8 @@ describe("TrailRenderer presentation spine", () => {
     const scene = new Scene(engine);
     const renderer = new TrailRenderer(scene);
     const packet = [
-      { x: 0, y: 0 },
-      { x: 0.55, y: 0 },
+      0, 0,
+      0.55, 0,
     ];
 
     renderer.updateTrail("player", "#00d2ff", packet, 2.2, 0);

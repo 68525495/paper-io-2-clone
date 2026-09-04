@@ -2,11 +2,12 @@ import { ArenaRenderer } from "./game/ArenaRenderer.js";
 import { CharacterRenderer } from "./game/CharacterRenderer.js";
 import { GameClient } from "./game/GameClient.js";
 import { InputController } from "./game/InputController.js";
+import { MovementSynchronizer } from "./game/MovementSynchronizer.js";
 import { ParticleEffects } from "./game/ParticleEffects.js";
 import { SceneManager } from "./game/SceneManager.js";
 import { TrailRenderer } from "./game/TrailRenderer.js";
-import { MiniMap } from "./ui/MiniMap.js";
-import { LeaderboardItem, UIManager } from "./ui/UIManager.js";
+import { MiniMap, type MiniMapPlayer } from "./ui/MiniMap.js";
+import { type LeaderboardItem, UIManager } from "./ui/UIManager.js";
 
 let sceneManager: SceneManager | null = null;
 let arenaRenderer: ArenaRenderer | null = null;
@@ -17,10 +18,22 @@ let inputController: InputController | null = null;
 let uiManager: UIManager | null = null;
 let miniMap: MiniMap | null = null;
 let client: GameClient | null = null;
+let movementSynchronizer: MovementSynchronizer | null = null;
+let pendingTerritoryGrid: Uint8Array | number[] | null = null;
+let territoryRenderRequest: number | null = null;
 let started = false;
+
+function cancelPendingTerritoryRender() {
+  if (territoryRenderRequest !== null) {
+    cancelAnimationFrame(territoryRenderRequest);
+    territoryRenderRequest = null;
+  }
+  pendingTerritoryGrid = null;
+}
 
 function returnToStartScreen() {
   started = false;
+  cancelPendingTerritoryRender();
   if (client) {
     client.disconnect();
   }
@@ -30,6 +43,7 @@ function returnToStartScreen() {
   if (trailRenderer) {
     trailRenderer.removeAll();
   }
+  movementSynchronizer?.reset();
   if (uiManager) {
     uiManager.hideDeathScreen();
   }
@@ -97,15 +111,12 @@ async function initGame(playerName: string) {
   const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
   if (!canvas) throw new Error("Canvas element not found");
 
+  cancelPendingTerritoryRender();
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-
-  canvas.width = window.innerWidth * (window.devicePixelRatio || 1);
-  canvas.height = window.innerHeight * (window.devicePixelRatio || 1);
 
   // 1. Initialize singletons on first run
   if (!sceneManager) {
     sceneManager = new SceneManager(canvas);
-    sceneManager.engine.resize();
 
     arenaRenderer = new ArenaRenderer(sceneManager.scene);
     charRenderer = new CharacterRenderer(sceneManager.scene);
@@ -118,31 +129,45 @@ async function initGame(playerName: string) {
     miniMap = new MiniMap(minimapBox);
 
     client = new GameClient();
+    movementSynchronizer = new MovementSynchronizer();
 
     // 2. Main Game & Render Loop (starts once)
     let totalTime = 0;
-    let renderFrameCount = 0;
-    let wasLocalDead = false;
 
     sceneManager.startRenderLoop((dt) => {
       totalTime += dt;
-      renderFrameCount++;
       arenaRenderer!.animateWater(totalTime);
 
       if (!client || !client.room || !client.room.state || !client.room.state.players) {
         return;
       }
 
-      client.sendInput(inputController!.targetAngle, inputController!.boost);
+      const clientTime = Date.now();
+      movementSynchronizer!.setLocalInput(inputController!.targetAngle);
+      movementSynchronizer!.setNetworkTiming(
+        client.getServerClockOffsetMs(),
+        client.getSmoothedRttMs()
+      );
+      uiManager!.updateLatency(client.getSmoothedRttMs());
+      const sentInput = client.sendInput(
+        inputController!.targetAngle,
+        inputController!.boost
+      );
+      if (sentInput) movementSynchronizer!.recordLocalInput(sentInput);
 
       const playersState = client.room.state.players;
       const leaderId = client.room.state.leaderId;
-      const miniMapPlayers: Array<{ id: string; x: number; y: number; isLocal: boolean; color: string; alive: boolean }> = [];
-      const leaderboardItems: LeaderboardItem[] = [];
+      const miniMapPlayers: MiniMapPlayer[] = [];
 
       playersState.forEach((player: any, sessionId: string) => {
         const isLocal = sessionId === client!.localSessionId;
         const isLeader = sessionId === leaderId;
+        const renderPose = movementSynchronizer!.getRenderPose(
+          sessionId,
+          player,
+          isLocal,
+          clientTime
+        );
 
         if (player.playerIndex > 0) {
           arenaRenderer!.setPlayerMeta(
@@ -156,7 +181,15 @@ async function initGame(playerName: string) {
         }
 
         charRenderer!.getOrCreate(sessionId, player.name, player.color, player.isBot);
-        charRenderer!.updatePlayer(sessionId, player.x, player.y, player.angle, player.alive, isLeader, dt);
+        charRenderer!.updatePlayer(
+          sessionId,
+          renderPose.x,
+          renderPose.y,
+          renderPose.angle,
+          player.alive,
+          isLeader,
+          dt
+        );
 
         const trailPoints = client!.trailData[sessionId];
         if (player.alive && trailPoints && trailPoints.length > 0) {
@@ -173,43 +206,34 @@ async function initGame(playerName: string) {
         }
 
         if (isLocal) {
-          const snap = (wasLocalDead || renderFrameCount <= 3) && player.alive;
-          sceneManager!.setCameraTarget(player.x, player.y, !snap);
-          wasLocalDead = !player.alive;
+          sceneManager!.setCameraTarget(renderPose.x, renderPose.y);
           uiManager!.updatePlayerStats(player.territoryPercent, player.kills, player.score);
         }
 
         miniMapPlayers.push({
           id: sessionId,
-          x: player.x,
-          y: player.y,
+          x: renderPose.x,
+          y: renderPose.y,
           isLocal,
           color: player.color,
           alive: player.alive,
         });
 
-        if (player.alive) {
-          leaderboardItems.push({
-            id: sessionId,
-            name: player.name,
-            percent: player.territoryPercent,
-            color: player.color,
-            rank: player.rank || 0,
-            characterSkin: player.characterSkin || "cube",
-          });
-        }
       });
 
-      leaderboardItems.sort((a, b) => b.percent - a.percent);
-      uiManager!.updateLeaderboard(leaderboardItems);
-      miniMap!.render(arenaRenderer!.rawGrid, arenaRenderer!.playerColorMap, miniMapPlayers);
+      miniMap!.renderPlayers(miniMapPlayers);
     });
   } else {
     // Re-use: cleanup previous match
     client!.disconnect();
     charRenderer!.removeAll();
     trailRenderer!.removeAll();
+    movementSynchronizer!.reset();
   }
+
+  // Babylon owns the backing-store resolution. Reapplying devicePixelRatio
+  // here makes a restarted WebView render DPR^2 more pixels than the first run.
+  sceneManager.engine.resize();
 
   // Helper to ensure player metadata is available for analytic base drawing
   const syncPlayerMeta = () => {
@@ -229,11 +253,33 @@ async function initGame(playerName: string) {
     }
   };
 
+  // A capture/kill can deliver several full-grid messages in one WebSocket
+  // burst. Keep only the newest grid and perform at most one expensive canvas
+  // rebuild + GPU texture upload in the next animation frame.
+  const scheduleTerritoryRender = () => {
+    if (territoryRenderRequest !== null) return;
+
+    territoryRenderRequest = requestAnimationFrame(() => {
+      territoryRenderRequest = null;
+      const grid = pendingTerritoryGrid;
+      pendingTerritoryGrid = null;
+      if (!grid || !arenaRenderer || !miniMap) return;
+
+      arenaRenderer.updateGrid(grid);
+      syncPlayerMeta();
+      if (!arenaRenderer.hasPendingTerritoryChanges()) return;
+      arenaRenderer.renderTerritory();
+      miniMap.updateTerritory(
+        arenaRenderer.rawGrid,
+        arenaRenderer.playerColorMap
+      );
+    });
+  };
+
   // 3. Setup Network Event Handlers on client
   client!.onGridSync = (gridArray) => {
-    arenaRenderer!.updateGrid(gridArray);
-    syncPlayerMeta();
-    arenaRenderer!.renderTerritory();
+    pendingTerritoryGrid = gridArray;
+    scheduleTerritoryRender();
   };
 
   client!.onTerritoryCaptured = (msg) => {
@@ -244,16 +290,12 @@ async function initGame(playerName: string) {
     // low-frequency trail_sync message.
     delete client!.trailData[msg.playerId];
     trailRenderer!.clearTrail(msg.playerId);
-    syncPlayerMeta();
-    arenaRenderer!.renderTerritory();
     particleEffects!.triggerCaptureEffect(msg.centerX, msg.centerY, color, msg.cellsCount);
   };
 
   client!.onPlayerKilled = (msg) => {
     delete client!.trailData[msg.victimId];
     trailRenderer!.clearTrail(msg.victimId);
-    syncPlayerMeta();
-    arenaRenderer!.renderTerritory();
 
     const killer = client!.room?.state.players.get(msg.killerId);
     const killerColor = killer?.color || "#FFE066";
@@ -306,18 +348,36 @@ async function initGame(playerName: string) {
   try {
     const room = await client!.connect(playerName);
     connectOverlay.remove();
+    movementSynchronizer!.setLocalPlayer(client!.localSessionId);
 
-    room.onStateChange((state) => {
+    const updateStatePresentation = (state: typeof room.state) => {
+      movementSynchronizer!.captureState(state);
       if (state.players) {
+        const leaderboardItems: LeaderboardItem[] = [];
         state.players.forEach((p: any) => {
           if (p.playerIndex > 0 && p.color) {
             arenaRenderer!.setPlayerColor(p.playerIndex, p.color);
           }
+          if (p.alive) {
+            leaderboardItems.push({
+              id: p.id,
+              name: p.name,
+              percent: p.territoryPercent,
+              color: p.color,
+              rank: p.rank || 0,
+              characterSkin: p.characterSkin || "cube",
+            });
+          }
         });
+        leaderboardItems.sort((a, b) => b.percent - a.percent);
+        uiManager!.updateLeaderboard(leaderboardItems);
         charRenderer!.cleanupRemoved(state.players);
         trailRenderer!.cleanupRemoved(state.players);
+        movementSynchronizer!.cleanupRemoved(state.players);
       }
-    });
+    };
+    updateStatePresentation(room.state);
+    room.onStateChange(updateStatePresentation);
   } catch (err) {
     console.error("[main] Failed to connect to game server:", err);
     connectOverlay.textContent = `Connection failed! ${(err as Error)?.message || ""}`;

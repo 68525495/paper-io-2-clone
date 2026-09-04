@@ -38,6 +38,7 @@ interface PaperRoomInternals {
   updateInner(deltaTime: number): void;
   checkTrailCollisions(): void;
   captureTerritory(player: PlayerState): void;
+  buildFullTrailSync(): Record<string, number[]>;
   resetMatch(): void;
 }
 
@@ -88,6 +89,40 @@ describe("PaperRoom authoritative regressions", () => {
     internals.updateInner(1000 / 30);
     expect(bot.alive).toBe(true);
     expect(internals.botRespawnAt.has(botId)).toBe(false);
+  });
+
+  it("publishes authoritative velocity and the processed input sequence", () => {
+    const { internals } = createRoomHarness();
+    const player = internals.spawnPlayer("synced-player", "Synced", false);
+    player.x = 0;
+    player.y = 0;
+    player.angle = 0;
+    player.targetAngle = 0;
+    const input = internals.playerInputs.get(player.id)!;
+    input.targetAngle = 0;
+    input.seq = 17;
+
+    internals.updateInner(1000 / 30);
+
+    expect(player.lastProcessedInputSeq).toBe(17);
+    expect(player.vx).toBeCloseTo(14, 5);
+    expect(player.vy).toBeCloseTo(0, 5);
+  });
+
+  it("increments the life id and clears motion when a player respawns", () => {
+    const { internals } = createRoomHarness();
+    const player = internals.spawnPlayer("respawning-player", "Runner", false);
+    const firstLifeId = player.lifeId;
+    player.vx = 12;
+    player.vy = -4;
+
+    const respawned = internals.spawnPlayer(player.id, player.name, false);
+
+    expect(respawned).toBe(player);
+    expect(respawned.lifeId).toBe(firstLifeId + 1);
+    expect(respawned.vx).toBe(0);
+    expect(respawned.vy).toBe(0);
+    expect(respawned.lastProcessedInputSeq).toBe(0);
   });
 
   it("ignores collisions with the player's own trail", () => {
@@ -154,6 +189,29 @@ describe("PaperRoom authoritative regressions", () => {
     );
   });
 
+  it("packs complete trail snapshots in the legacy-compatible wire format", () => {
+    const { internals } = createRoomHarness();
+    const player = internals.spawnPlayer("snapshot-runner", "Snapshot", false);
+    const trail = [
+      new TrailPoint(0, 0),
+      new TrailPoint(1, 1),
+      new TrailPoint(2, 2),
+    ];
+    internals.playerTrails.set(player.id, trail);
+
+    expect(internals.buildFullTrailSync()[player.id]).toEqual([
+      0, 0, 1, 1, 2, 2,
+    ]);
+
+    trail.push(new TrailPoint(3, 3));
+    expect(internals.buildFullTrailSync()[player.id]).toEqual([
+      0, 0, 1, 1, 2, 2, 3, 3,
+    ]);
+
+    internals.playerTrails.set(player.id, []);
+    expect(internals.buildFullTrailSync()[player.id]).toBeUndefined();
+  });
+
   it("keeps repeated spawns and their complete bases inside the organic arena", () => {
     const { internals } = createRoomHarness();
     let randomState = 0x51f15e;
@@ -214,10 +272,13 @@ describe("PaperRoom authoritative regressions", () => {
   });
 
   it("locks the room when a normal territory capture crosses 50 percent", () => {
-    const { room, internals } = createRoomHarness();
+    const { room, internals, broadcastSpy } = createRoomHarness();
     const lockSpy = vi.spyOn(room, "lock").mockResolvedValue(undefined);
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const player = internals.spawnPlayer("capturer", "Closer", false);
+    const trapped = internals.spawnPlayer("trapped", "Inside", false);
+    trapped.x = 0;
+    trapped.y = 0;
 
     internals.grid.clearPlayerTerritory(player.id);
     const loop = sampleArenaContour(128, 12);
@@ -246,6 +307,10 @@ describe("PaperRoom authoritative regressions", () => {
     expect(claimedAfter).toBeGreaterThan(50);
     expect(player.territoryPercent).toBeGreaterThan(50);
     expect(player.territoryPercent).toBeCloseTo(claimedAfter, 2);
+    expect(trapped.alive).toBe(false);
+    expect(
+      broadcastSpy.mock.calls.filter(([type]) => type === "full_grid_sync")
+    ).toHaveLength(1);
     expect(internals.isGameOver).toBe(false);
     expect(internals.isLateGame).toBe(true);
     expect(lockSpy).toHaveBeenCalledTimes(1);

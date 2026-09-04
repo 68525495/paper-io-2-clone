@@ -20,6 +20,9 @@ import {
   randomPointInsideArena,
 } from "./arenaShape.js";
 import {
+  ClockPingMessage,
+  ClockPongMessage,
+  encodeGridRle,
   FullGridSyncMessage,
   GameOverMessage,
   InputMessage,
@@ -64,6 +67,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
   onCreate(options: { practice?: boolean } = {}) {
     this.setState(new GameState());
+    this.state.serverTime = Date.now();
     this.setPatchRate(1000 / 15); // 15Hz patching
     this.setSimulationInterval((dt) => this.update(dt), 1000 / 30); // 30Hz simulation
 
@@ -74,7 +78,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
       const nextSeq = Number(message.seq);
       if (Number.isSafeInteger(nextSeq)) {
-        if (nextSeq <= input.seq) return;
+        if (nextSeq <= input.seq || nextSeq < 0 || nextSeq > 0xffff_ffff) return;
         input.seq = nextSeq;
       } else {
         input.seq++;
@@ -104,6 +108,16 @@ export class PaperRoom extends Room<{ state: GameState }> {
       if (player && !player.alive) {
         this.spawnPlayer(client.sessionId, player.name, false);
       }
+    });
+
+    this.onMessage("clock_ping", (client, message: Partial<ClockPingMessage>) => {
+      const clientTime = Number(message.clientTime);
+      if (!Number.isFinite(clientTime)) return;
+      client.send("clock_pong", {
+        clientTime,
+        serverTime: Date.now(),
+        serverTick: this.state.serverTick,
+      } as ClockPongMessage);
     });
 
     // Diagnostic logging
@@ -138,18 +152,15 @@ export class PaperRoom extends Room<{ state: GameState }> {
       for (let i = 0; i < this.targetBotCount; i++) this.spawnBot();
     }
 
-    // Send initial full grid sync
-    client.send("full_grid_sync", {
-      grid: this.grid.getRawCells(),
-      width: this.grid.width,
-      height: this.grid.height,
-    } as FullGridSyncMessage);
+    // One broadcast includes the joining client and updates existing clients
+    // with the new spawn bases without sending the same 65 KiB grid twice.
+    this.broadcastGridNow();
+    client.send("trail_sync", this.buildFullTrailSync());
   }
 
   onLeave(client: Client, code?: number) {
     const player = this.state.players.get(client.sessionId);
     if (player) {
-      this.grid.clearPlayerTerritory(client.sessionId);
       this.grid.unregisterPlayer(client.sessionId);
       this.state.players.delete(client.sessionId);
       this.playerTrails.delete(client.sessionId);
@@ -165,10 +176,16 @@ export class PaperRoom extends Room<{ state: GameState }> {
   private broadcastGridNow() {
     this.lastGridSyncTime = Date.now();
     this.gridSyncPending = false;
+    const rawGrid = this.grid.getRawCells();
+    const rleGrid = encodeGridRle(rawGrid);
+    // RLE entries are ordinary msgpack numbers, so require a clear element
+    // count win before choosing them over the byte array.
+    const useRle = rleGrid.length * 2 < rawGrid.length;
     this.broadcast("full_grid_sync", {
-      grid: this.grid.getRawCells(),
+      grid: useRle ? rleGrid : rawGrid,
       width: this.grid.width,
       height: this.grid.height,
+      encoding: useRle ? "rle" : "raw",
     } as FullGridSyncMessage);
   }
 
@@ -201,6 +218,27 @@ export class PaperRoom extends Room<{ state: GameState }> {
       p.active = true;
       this.state.pickups.push(p);
     }
+  }
+
+  private packTrail(trail: TrailPoint[]): number[] {
+    const flat: number[] = [];
+    for (let index = 0; index < trail.length; index++) {
+      const point = trail[index];
+      flat.push(
+        Math.round(point.x * 10) / 10,
+        Math.round(point.y * 10) / 10
+      );
+    }
+    return flat;
+  }
+
+  private buildFullTrailSync(): Record<string, number[]> {
+    const message: Record<string, number[]> = {};
+    this.playerTrails.forEach((trail, playerId) => {
+      if (trail.length === 0) return;
+      message[playerId] = this.packTrail(trail);
+    });
+    return message;
   }
 
   private pickColor(): string {
@@ -264,6 +302,10 @@ export class PaperRoom extends Room<{ state: GameState }> {
     player.angle = Math.random() * Math.PI * 2 - Math.PI;
     player.targetAngle = player.angle;
     player.speed = PLAYER_SPEED;
+    player.vx = 0;
+    player.vy = 0;
+    player.lastProcessedInputSeq = 0;
+    player.lifeId = (player.lifeId % 0xffff) + 1;
     player.alive = true;
     player.isBot = isBot;
     player.inTerritory = true;
@@ -310,12 +352,18 @@ export class PaperRoom extends Room<{ state: GameState }> {
     this.tickCount++;
     try {
       this.updateInner(deltaTime);
+      this.state.serverTick = this.tickCount;
+      this.state.serverTime = Date.now();
     } catch (err) {
       console.error(`[PaperRoom] update() threw at tick ${this.tickCount}:`, err);
       if (err instanceof Error) console.error(err.stack);
     }
-    // Log every ~1 second
-    if (this.tickCount <= 3 || this.tickCount % 30 === 0) {
+    // Tick logs are opt-in because container stdout backpressure can stall the
+    // authoritative simulation and surface as movement hitches for everyone.
+    if (
+      process.env.DEBUG_GAME_TICKS === "1" &&
+      (this.tickCount <= 3 || this.tickCount % 30 === 0)
+    ) {
       let trailTotal = 0;
       this.playerTrails.forEach((t) => { trailTotal += t.length; });
       console.log(`[PaperRoom] tick=${this.tickCount} dt=${deltaTime.toFixed(0)}ms players=${this.state.players.size} trails=${trailTotal}`);
@@ -364,10 +412,17 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
     for (const playerId of playerIds) {
       const player = this.state.players.get(playerId);
-      if (!player || !player.alive) continue;
+      if (!player) continue;
+      if (!player.alive) {
+        player.vx = 0;
+        player.vy = 0;
+        continue;
+      }
 
       const input = this.playerInputs.get(player.id);
       const targetAngle = input ? input.targetAngle : player.targetAngle;
+      const previousX = player.x;
+      const previousY = player.y;
 
       // Turn towards target angle with max angular speed
       player.angle = stepAngle(player.angle, targetAngle, PLAYER_TURN_SPEED * dt);
@@ -390,6 +445,16 @@ export class PaperRoom extends Room<{ state: GameState }> {
       );
       player.x = constrained.x;
       player.y = constrained.y;
+      if (dt > 0) {
+        player.vx = (player.x - previousX) / dt;
+        player.vy = (player.y - previousY) / dt;
+      } else {
+        player.vx = 0;
+        player.vy = 0;
+      }
+      if (input) {
+        player.lastProcessedInputSeq = input.seq;
+      }
 
       // Check Territory status
       const inOwnLand = this.grid.isOwnTerritory(player.id, player.x, player.y);
@@ -443,20 +508,11 @@ export class PaperRoom extends Room<{ state: GameState }> {
       this.spawnBot();
     }
 
-    // 7. Broadcast trail data as raw message (~3Hz)
+    // 7. Broadcast a complete packed snapshot (~3Hz). This keeps the wire
+    // format compatible across rolling frontend/backend updates while avoiding
+    // per-point object allocation in mobile WebViews.
     if (this.tickCount % 10 === 0) {
-      const trailData: Record<string, number[]> = {};
-      this.playerTrails.forEach((trail, playerId) => {
-        if (trail.length > 0) {
-          // Pack as flat array: [x1, y1, x2, y2, ...] with 1 decimal precision
-          const flat: number[] = [];
-          for (const p of trail) {
-            flat.push(Math.round(p.x * 10) / 10, Math.round(p.y * 10) / 10);
-          }
-          trailData[playerId] = flat;
-        }
-      });
-      this.broadcast("trail_sync", trailData);
+      this.broadcast("trail_sync", this.buildFullTrailSync());
     }
 
     // 8. Flush throttled grid sync
@@ -569,7 +625,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
     // Eliminate any players trapped inside
     for (const trappedId of result.trappedPlayerIds) {
-      this.eliminatePlayer(trappedId, player.id, false);
+      this.eliminatePlayer(trappedId, player.id, false, false);
     }
 
     // Recalculate territory percent for all players
@@ -578,7 +634,7 @@ export class PaperRoom extends Room<{ state: GameState }> {
         p.territoryCells = this.grid.countTerritoryCells(p.id);
         p.territoryPercent = this.grid.getTerritoryPercent(p.id);
         if (p.territoryCells === 0) {
-          this.eliminatePlayer(p.id, player.id, false);
+          this.eliminatePlayer(p.id, player.id, false, false);
         }
       }
     });
@@ -601,11 +657,18 @@ export class PaperRoom extends Room<{ state: GameState }> {
     this.checkLateGame();
   }
 
-  private eliminatePlayer(victimId: string, killerId: string, isSuicide: boolean) {
+  private eliminatePlayer(
+    victimId: string,
+    killerId: string,
+    isSuicide: boolean,
+    broadcastGrid: boolean = true
+  ) {
     const victim = this.state.players.get(victimId);
     if (!victim || !victim.alive) return;
 
     victim.alive = false;
+    victim.vx = 0;
+    victim.vy = 0;
     this.playerTrails.set(victimId, []);
 
     let absorbedCount = 0;
@@ -631,8 +694,9 @@ export class PaperRoom extends Room<{ state: GameState }> {
     victim.territoryCells = 0;
     victim.territoryPercent = 0;
 
-    // Send updated grid to all clients immediately!
-    this.broadcastGridNow();
+    // Enclosure capture may eliminate several players synchronously. Its
+    // caller sends one final authoritative grid after all transfers finish.
+    if (broadcastGrid) this.broadcastGridNow();
 
     this.broadcast("player_killed", {
       killerId,

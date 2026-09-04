@@ -1,5 +1,8 @@
 import { Client, Room } from "@colyseus/sdk";
 import {
+  ClockPingMessage,
+  ClockPongMessage,
+  decodeGridSync,
   FullGridSyncMessage,
   GameOverMessage,
   InputMessage,
@@ -15,6 +18,79 @@ export type OnPlayerKilledCallback = (msg: PlayerKilledMessage) => void;
 export type OnPickupCollectedCallback = (msg: PickupCollectedMessage) => void;
 export type OnGameOverCallback = (msg: GameOverMessage) => void;
 
+export interface SentInputSample {
+  targetAngle: number;
+  boost: boolean;
+  seq: number;
+  dt: number;
+  clientTime: number;
+}
+
+const INPUT_SEND_INTERVAL_MS = 1000 / 30;
+const INPUT_HEARTBEAT_MS = 250;
+const INPUT_ANGLE_EPSILON = 0.0025;
+
+interface TransitionalTrailDelta {
+  reset: boolean;
+  startPoint: number;
+  points: number[];
+}
+
+export type TrailSyncPayload = Record<
+  string,
+  number[] | TransitionalTrailDelta
+>;
+
+/**
+ * Accept both the stable full-snapshot format and the short-lived incremental
+ * format so a WebView refresh cannot lose trails during a rolling restart.
+ */
+export function applyTrailSync(
+  trails: Record<string, number[]>,
+  message: TrailSyncPayload
+): Record<string, number[]> {
+  const entries = Object.entries(message);
+  if (entries.every(([, value]) => Array.isArray(value))) {
+    const snapshot: Record<string, number[]> = {};
+    for (const [playerId, points] of entries) {
+      if (Array.isArray(points)) snapshot[playerId] = points;
+    }
+    return snapshot;
+  }
+
+  for (const [playerId, payload] of entries) {
+    if (Array.isArray(payload)) {
+      trails[playerId] = payload;
+      continue;
+    }
+    if (!payload || !Array.isArray(payload.points)) continue;
+
+    if (payload.reset) {
+      if (payload.points.length >= 2) trails[playerId] = payload.points;
+      else delete trails[playerId];
+      continue;
+    }
+
+    const existing = trails[playerId];
+    if (!existing || existing.length !== payload.startPoint * 2) {
+      delete trails[playerId];
+      continue;
+    }
+    existing.push(...payload.points);
+  }
+  return trails;
+}
+
+function normalizeAngle(angle: number): number {
+  let normalized = (angle + Math.PI) % (Math.PI * 2);
+  if (normalized < 0) normalized += Math.PI * 2;
+  return normalized - Math.PI;
+}
+
+function angleDistance(a: number, b: number): number {
+  return Math.abs(normalizeAngle(b - a));
+}
+
 export class GameClient {
   private client: Client | null = null;
   public room: Room<GameState> | null = null;
@@ -25,25 +101,51 @@ export class GameClient {
   public onPlayerKilled: OnPlayerKilledCallback | null = null;
   public onPickupCollected: OnPickupCollectedCallback | null = null;
   public onGameOver: OnGameOverCallback | null = null;
-  public trailData: Record<string, Array<{ x: number; y: number }>> = {};
+  // Keep the wire-efficient flat representation. Expanding every 3 Hz trail
+  // snapshot into thousands of short-lived point objects causes GC stalls in
+  // long-running mobile WebViews.
+  public trailData: Record<string, number[]> = {};
 
   private pingInterval: number | null = null;
   private smoothedRtt: number = 0;
+  private bestRtt: number = Number.POSITIVE_INFINITY;
+  private serverClockOffsetMs: number = 0;
+  private hasClockSync: boolean = false;
   private inputSeq: number = 0;
+  private lastInputSentAt: number = Number.NEGATIVE_INFINITY;
+  private lastSentTargetAngle: number = Number.NaN;
+  private lastSentBoost: boolean = false;
 
   async connect(playerName: string): Promise<Room<GameState>> {
     const endpoint = await this.resolveEndpoint();
-    console.log("[GameClient] Connecting to Colyseus endpoint:", endpoint);
+    if (import.meta.env.DEV) {
+      console.log("[GameClient] Connecting to Colyseus endpoint:", endpoint);
+    }
 
     this.client = new Client(endpoint);
     this.room = await this.client.joinOrCreate<GameState>("paper", { name: playerName }, GameState);
     this.localSessionId = this.room.sessionId;
+    this.inputSeq = 0;
+    this.lastInputSentAt = Number.NEGATIVE_INFINITY;
+    this.lastSentTargetAngle = Number.NaN;
+    this.lastSentBoost = false;
+    this.smoothedRtt = 0;
+    this.bestRtt = Number.POSITIVE_INFINITY;
+    this.serverClockOffsetMs = 0;
+    this.hasClockSync = false;
 
-    console.log("[GameClient] Joined room successfully. SessionId:", this.localSessionId);
+    if (import.meta.env.DEV) {
+      console.log("[GameClient] Joined room successfully. SessionId:", this.localSessionId);
+    }
 
     // Setup message handlers
     this.room.onMessage("full_grid_sync", (msg: FullGridSyncMessage) => {
-      if (this.onGridSync) this.onGridSync(msg.grid, msg.width, msg.height);
+      if (!this.onGridSync) return;
+      try {
+        this.onGridSync(decodeGridSync(msg), msg.width, msg.height);
+      } catch (error) {
+        console.error("[GameClient] Invalid full_grid_sync payload:", error);
+      }
     });
 
     this.room.onMessage("territory_captured", (msg: TerritoryCapturedMessage) => {
@@ -62,27 +164,15 @@ export class GameClient {
       if (this.onGameOver) this.onGameOver(msg);
     });
 
-    this.room.onMessage("trail_sync", (msg: Record<string, number[]>) => {
-      // Unpack flat arrays [x1,y1,x2,y2,...] into point objects
-      const unpacked: Record<string, Array<{ x: number; y: number }>> = {};
-      for (const [id, flat] of Object.entries(msg)) {
-        const pts: Array<{ x: number; y: number }> = [];
-        for (let i = 0; i < flat.length - 1; i += 2) {
-          pts.push({ x: flat[i], y: flat[i + 1] });
-        }
-        unpacked[id] = pts;
-      }
-      this.trailData = unpacked;
+    this.room.onMessage("trail_sync", (msg: TrailSyncPayload) => {
+      // Full packed snapshots are intentionally protocol-compatible with
+      // previously deployed servers. Keeping them packed avoids allocating a
+      // point object for every coordinate in long-running mobile WebViews.
+      this.trailData = applyTrailSync(this.trailData, msg);
     });
 
-    // Diagnostic: log state changes
-    let stateChangeCount = 0;
-    this.room.onStateChange((state) => {
-      stateChangeCount++;
-      if (stateChangeCount <= 3 || stateChangeCount % 30 === 0) {
-        const local = state.players.get(this.localSessionId);
-        console.log(`[GameClient] stateChange #${stateChangeCount} players=${state.players.size} localX=${local?.x?.toFixed(1)}`);
-      }
+    this.room.onMessage("clock_pong", (msg: ClockPongMessage) => {
+      this.handleClockPong(msg);
     });
 
     this.room.onError((code, message) => {
@@ -99,16 +189,34 @@ export class GameClient {
     return this.room;
   }
 
-  sendInput(targetAngle: number, boost: boolean = false) {
-    if (!this.room) return;
-    this.inputSeq++;
-    const msg: InputMessage = {
-      targetAngle,
+  sendInput(targetAngle: number, boost: boolean = false): SentInputSample | null {
+    if (!this.room || !Number.isFinite(targetAngle)) return null;
+
+    const normalizedAngle = normalizeAngle(targetAngle);
+    const now = performance.now();
+    const elapsed = now - this.lastInputSentAt;
+    const inputChanged =
+      !Number.isFinite(this.lastSentTargetAngle) ||
+      angleDistance(this.lastSentTargetAngle, normalizedAngle) >= INPUT_ANGLE_EPSILON ||
+      boost !== this.lastSentBoost;
+    if (elapsed < INPUT_SEND_INTERVAL_MS || (!inputChanged && elapsed < INPUT_HEARTBEAT_MS)) {
+      return null;
+    }
+
+    this.inputSeq = (this.inputSeq + 1) >>> 0;
+    if (this.inputSeq === 0) this.inputSeq = 1;
+    const msg: SentInputSample = {
+      targetAngle: normalizedAngle,
       boost,
       seq: this.inputSeq,
+      dt: Number.isFinite(elapsed) ? Math.max(0, Math.min(100, elapsed)) : 0,
       clientTime: Date.now(),
     };
-    this.room.send("input", msg);
+    this.room.send("input", msg as InputMessage);
+    this.lastInputSentAt = now;
+    this.lastSentTargetAngle = normalizedAngle;
+    this.lastSentBoost = boost;
+    return msg;
   }
 
   requestRespawn() {
@@ -117,19 +225,56 @@ export class GameClient {
   }
 
   private startMetricsReporting() {
-    // Send periodic latency metrics as required by platform contract
+    if (this.pingInterval !== null) clearInterval(this.pingInterval);
+    this.sendClockPing();
     this.pingInterval = window.setInterval(() => {
-      if (!this.room) return;
-      const start = performance.now();
-      // Estimate RTT
-      const rtt = Math.max(10, Math.min(300, performance.now() - start + 20));
-      this.smoothedRtt = this.smoothedRtt === 0 ? rtt : this.smoothedRtt * 0.8 + rtt * 0.2;
-      try {
-        this.room.send("__runner_metrics", { latency: Math.round(this.smoothedRtt) });
-      } catch {
-        // Runner metrics
-      }
+      this.sendClockPing();
     }, 2000);
+  }
+
+  private sendClockPing() {
+    if (!this.room) return;
+    this.room.send("clock_ping", { clientTime: Date.now() } as ClockPingMessage);
+  }
+
+  private handleClockPong(message: ClockPongMessage) {
+    const receivedAt = Date.now();
+    const clientTime = Number(message.clientTime);
+    const serverTime = Number(message.serverTime);
+    if (!Number.isFinite(clientTime) || !Number.isFinite(serverTime)) return;
+
+    const rtt = receivedAt - clientTime;
+    if (rtt < 0 || rtt > 10_000) return;
+
+    const offsetSample = serverTime - (clientTime + rtt / 2);
+    if (!this.hasClockSync) {
+      this.serverClockOffsetMs = offsetSample;
+      this.bestRtt = rtt;
+      this.hasClockSync = true;
+    } else if (rtt <= this.bestRtt + 12) {
+      const weight = rtt < this.bestRtt ? 0.35 : 0.12;
+      this.serverClockOffsetMs += (offsetSample - this.serverClockOffsetMs) * weight;
+      this.bestRtt = Math.min(this.bestRtt, rtt);
+    }
+
+    this.smoothedRtt = this.smoothedRtt === 0 ? rtt : this.smoothedRtt * 0.8 + rtt * 0.2;
+    try {
+      this.room?.send("__runner_metrics", { latency: Math.round(this.smoothedRtt) });
+    } catch {
+      // Runner metrics are advisory and must never interrupt gameplay.
+    }
+  }
+
+  getServerClockOffsetMs(): number {
+    return this.serverClockOffsetMs;
+  }
+
+  getSmoothedRttMs(): number {
+    return this.smoothedRtt;
+  }
+
+  getEstimatedServerTime(clientTime: number = Date.now()): number {
+    return clientTime + this.serverClockOffsetMs;
   }
 
   private async resolveEndpoint(): Promise<string> {
@@ -158,7 +303,7 @@ export class GameClient {
   }
 
   disconnect() {
-    if (this.pingInterval) clearInterval(this.pingInterval);
+    if (this.pingInterval !== null) clearInterval(this.pingInterval);
     this.pingInterval = null;
     if (this.room) {
       this.room.leave();
@@ -166,5 +311,13 @@ export class GameClient {
     }
     this.trailData = {};
     this.localSessionId = "";
+    this.inputSeq = 0;
+    this.lastInputSentAt = Number.NEGATIVE_INFINITY;
+    this.lastSentTargetAngle = Number.NaN;
+    this.lastSentBoost = false;
+    this.smoothedRtt = 0;
+    this.bestRtt = Number.POSITIVE_INFINITY;
+    this.serverClockOffsetMs = 0;
+    this.hasClockSync = false;
   }
 }

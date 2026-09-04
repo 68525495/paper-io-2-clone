@@ -329,6 +329,10 @@ export function smoothClosedLoop(
   for (let iter = 0; iter < iterations; iter++) {
     const next: Point2D[] = [];
     const n = current.length;
+    // Generated points follow the contour in order. Start each nearest-edge
+    // search where the previous one finished instead of rescanning the raw
+    // boundary from index zero for every point.
+    let segmentHint = 0;
 
     for (let i = 0; i < n; i++) {
       const p0 = current[i];
@@ -341,8 +345,25 @@ export function smoothClosedLoop(
       const rx = 0.25 * p0.x + 0.75 * p1.x;
       const ry = 0.25 * p0.y + 0.75 * p1.y;
 
-      next.push(constrainPointToOriginal(qx, qy, original, maxDeviation));
-      next.push(constrainPointToOriginal(rx, ry, original, maxDeviation));
+      const constrainedQ = constrainPointToOriginal(
+        qx,
+        qy,
+        original,
+        maxDeviation,
+        segmentHint
+      );
+      segmentHint = constrainedQ.segmentIndex;
+      next.push(constrainedQ.point);
+
+      const constrainedR = constrainPointToOriginal(
+        rx,
+        ry,
+        original,
+        maxDeviation,
+        segmentHint
+      );
+      segmentHint = constrainedR.segmentIndex;
+      next.push(constrainedR.point);
     }
 
     current = next;
@@ -358,14 +379,19 @@ function constrainPointToOriginal(
   px: number,
   py: number,
   original: Point2D[],
-  maxDeviation: number
-): Point2D {
+  maxDeviation: number,
+  startSegment: number = 0
+): { point: Point2D; segmentIndex: number } {
   let minDistSq = Infinity;
   let closestX = px;
   let closestY = py;
+  let closestSegment = 0;
 
   const n = original.length;
-  for (let i = 0; i < n; i++) {
+  const firstSegment = ((startSegment % n) + n) % n;
+  const maxDeviationSq = maxDeviation * maxDeviation;
+  for (let offset = 0; offset < n; offset++) {
+    const i = (firstSegment + offset) % n;
     const p0 = original[i];
     const p1 = original[(i + 1) % n];
 
@@ -381,21 +407,34 @@ function constrainPointToOriginal(
     const projY = p0.y + t * dy;
 
     const distSq = (px - projX) * (px - projX) + (py - projY) * (py - projY);
-    if (distSq < minDistSq) {
+    // The unconstrained point is returned whenever any original edge is
+    // already close enough. Avoid scanning the rest of a potentially very
+    // long boundary in that overwhelmingly common case.
+    if (distSq <= maxDeviationSq) {
+      return { point: { x: px, y: py }, segmentIndex: i };
+    }
+    if (
+      distSq < minDistSq ||
+      (distSq === minDistSq && i < closestSegment)
+    ) {
       minDistSq = distSq;
       closestX = projX;
       closestY = projY;
+      closestSegment = i;
     }
   }
 
   const dist = Math.sqrt(minDistSq);
-  if (dist <= maxDeviation || dist < 1e-6) {
-    return { x: px, y: py };
+  if (dist < 1e-6) {
+    return { point: { x: px, y: py }, segmentIndex: closestSegment };
   }
 
   const ratio = maxDeviation / dist;
   return {
-    x: closestX + (px - closestX) * ratio,
-    y: closestY + (py - closestY) * ratio,
+    point: {
+      x: closestX + (px - closestX) * ratio,
+      y: closestY + (py - closestY) * ratio,
+    },
+    segmentIndex: closestSegment,
   };
 }

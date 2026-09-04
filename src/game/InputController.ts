@@ -54,8 +54,7 @@ export class InputController {
       this.joystickBase.style.left = `${touch.clientX}px`;
       this.joystickBase.style.top = `${touch.clientY}px`;
       // Reset knob to center
-      this.joystickKnob.style.left = "50%";
-      this.joystickKnob.style.top = "50%";
+      this.joystickKnob.style.transform = "translate(-50%, -50%)";
     }, { passive: false });
 
     zone.addEventListener("touchmove", (e: TouchEvent) => {
@@ -77,8 +76,8 @@ export class InputController {
           const clampedDist = Math.min(dist, maxR);
           const normDx = (dx / dist) * clampedDist;
           const normDy = (dy / dist) * clampedDist;
-          this.joystickKnob.style.left = `calc(50% + ${normDx}px)`;
-          this.joystickKnob.style.top = `calc(50% + ${normDy}px)`;
+          this.joystickKnob.style.transform =
+            `translate(calc(-50% + ${normDx}px), calc(-50% + ${normDy}px))`;
         }
         break;
       }

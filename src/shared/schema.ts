@@ -22,6 +22,11 @@ export class PlayerState extends Schema {
   @type("float64") boostUntil: number = 0;
   @type("float32") spawnX: number = 0;
   @type("float32") spawnY: number = 0;
+  // Append network-smoothing fields to preserve existing schema field indexes.
+  @type("float32") vx: number = 0;
+  @type("float32") vy: number = 0;
+  @type("uint32") lastProcessedInputSeq: number = 0;
+  @type("uint16") lifeId: number = 0;
   // Trail data received via "trail_sync" messages, not schema
 }
 
@@ -37,4 +42,6 @@ export class GameState extends Schema {
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
   @type([PickupState]) pickups = new ArraySchema<PickupState>();
   @type("string") leaderId: string = "";
+  @type("uint32") serverTick: number = 0;
+  @type("float64") serverTime: number = 0;
 }
