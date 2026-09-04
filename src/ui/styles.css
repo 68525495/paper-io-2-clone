@@ -278,8 +278,11 @@ html, body {
   gap: 4px;
   padding: 3px 8px 3px 4px;
   border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1.5px solid rgba(148, 163, 184, 0.55);
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.09);
-  min-width: 85px;
+  min-width: 160px;
+  max-width: min(210px, calc(100vw - 20px));
   backdrop-filter: blur(6px);
 }
 
@@ -300,6 +303,8 @@ html, body {
 
 .lb-rank-badge {
   font-size: 12px;
+  flex: 0 0 18px;
+  text-align: center;
 }
 
 .lb-avatar {
@@ -312,16 +317,37 @@ html, body {
   align-items: center;
   justify-content: center;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.12);
+  flex-shrink: 0;
 }
 
 .avatar-emoji {
   font-size: 13px;
 }
 
+.lb-info {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.lb-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #40556D;
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .lb-percent {
   color: #27405A;
   font-size: 12px;
   font-weight: 800;
+  flex-shrink: 0;
 }
 
 /* =========================================
@@ -457,5 +483,13 @@ html, body {
   .minimap-canvas {
     width: 110px;
     height: 110px;
+  }
+}
+
+@media (max-height: 520px) and (min-aspect-ratio: 4/3) {
+  .top-right-leaderboard {
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(5, max-content);
   }
 }

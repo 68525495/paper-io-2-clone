@@ -90,7 +90,7 @@ describe("PaperRoom authoritative regressions", () => {
     expect(internals.botRespawnAt.has(botId)).toBe(false);
   });
 
-  it("treats an old self-trail hit as suicide without awarding kills or score", () => {
+  it("ignores collisions with the player's own trail", () => {
     const { room, internals, broadcastSpy } = createRoomHarness();
     const player = internals.spawnPlayer("self-hit", "Looper", false);
     player.x = 0;
@@ -98,7 +98,7 @@ describe("PaperRoom authoritative regressions", () => {
     player.score = 321;
     player.kills = 4;
 
-    internals.playerTrails.set("self-hit", [
+    const trail = [
       new TrailPoint(-3, 0),
       new TrailPoint(-2, 0),
       new TrailPoint(-1, 0),
@@ -111,20 +111,45 @@ describe("PaperRoom authoritative regressions", () => {
       new TrailPoint(2, 2),
       new TrailPoint(1, 1),
       new TrailPoint(0, 0.5),
+    ];
+    internals.playerTrails.set("self-hit", trail);
+
+    internals.checkTrailCollisions();
+
+    expect(player.alive).toBe(true);
+    expect(player.kills).toBe(4);
+    expect(player.score).toBe(321);
+    expect(internals.playerTrails.get(player.id)).toBe(trail);
+    expect(broadcastSpy).not.toHaveBeenCalledWith(
+      "player_killed",
+      expect.anything()
+    );
+  });
+
+  it("still eliminates a player when an opponent cuts their trail", () => {
+    const { room, internals, broadcastSpy } = createRoomHarness();
+    const attacker = internals.spawnPlayer("attacker", "Cutter", false);
+    const victim = internals.spawnPlayer("victim", "Runner", false);
+    attacker.x = 0;
+    attacker.y = 0.5;
+    attacker.kills = 2;
+    internals.playerTrails.set(victim.id, [
+      new TrailPoint(-3, 0),
+      new TrailPoint(3, 0),
     ]);
 
     internals.checkTrailCollisions();
 
-    expect(player.alive).toBe(false);
-    expect(player.kills).toBe(4);
-    expect(player.score).toBe(321);
-    expect(internals.playerTrails.get(player.id)).toEqual([]);
+    expect(attacker.alive).toBe(true);
+    expect(attacker.kills).toBe(3);
+    expect(victim.alive).toBe(false);
+    expect(internals.playerTrails.get(victim.id)).toEqual([]);
     expect(broadcastSpy).toHaveBeenCalledWith(
       "player_killed",
       expect.objectContaining({
-        killerId: player.id,
-        victimId: player.id,
-        isSuicide: true,
+        killerId: attacker.id,
+        victimId: victim.id,
+        isSuicide: false,
       })
     );
   });

@@ -13,7 +13,6 @@ import {
   PLAYER_TURN_SPEED,
   TRAIL_MIN_SEGMENT_DIST,
   TRAIL_RADIUS,
-  TRAIL_SELF_HIT_SAFE_SEGMENTS,
   TERRITORY_SCORE_PER_CELL,
 } from "./constants.js";
 import {
@@ -476,19 +475,14 @@ export class PaperRoom extends Room<{ state: GameState }> {
 
       for (let j = 0; j < players.length; j++) {
         const victim = players[j];
+        if (killer.id === victim.id) continue;
+
         const victimTrail = this.playerTrails.get(victim.id) || [];
         if (!victim.alive || victimTrail.length < 2) continue;
 
-        const isSelfCollision = killer.id === victim.id;
-        const segmentLimit = isSelfCollision
-          ? victimTrail.length - TRAIL_SELF_HIT_SAFE_SEGMENTS - 1
-          : victimTrail.length - 1;
-        if (segmentLimit <= 0) continue;
-
-        // Enemy trails are lethal to their owner when cut. Crossing an old
-        // portion of one's own trail is a suicide; recent head segments are
-        // excluded so a freshly emitted trail cannot kill its owner.
-        for (let s = 0; s < segmentLimit; s++) {
+        // A player's head can cut another player's trail. Their own trail is
+        // intentionally harmless and is skipped above.
+        for (let s = 0; s < victimTrail.length - 1; s++) {
           const p1 = victimTrail[s];
           const p2 = victimTrail[s + 1];
           if (
@@ -502,16 +496,10 @@ export class PaperRoom extends Room<{ state: GameState }> {
               p2.y
             )
           ) {
-            this.eliminatePlayer(
-              victim.id,
-              killer.id,
-              isSelfCollision
-            );
+            this.eliminatePlayer(victim.id, killer.id, false);
             break;
           }
         }
-
-        if (!killer.alive) break;
       }
     }
   }

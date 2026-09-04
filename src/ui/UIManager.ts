@@ -14,6 +14,7 @@ export class UIManager {
   private deathReasonText!: HTMLElement;
   private deathStatsText!: HTMLElement;
   private respawnBtn!: HTMLElement;
+  private leaderboardSignature = "";
 
   public onRespawnClick: (() => void) | null = null;
 
@@ -83,30 +84,56 @@ export class UIManager {
   }
 
   updateLeaderboard(entries: LeaderboardItem[]) {
-    const top3 = entries.slice(0, 3);
-    let html = "";
-
     const rankBadges = ["👑", "②", "③"];
     const avatarIcons = ["🐰", "🦊", "🤖", "🐻", "🐱"];
+    const signature = JSON.stringify(
+      entries.map((item) => [
+        item.id,
+        item.name,
+        item.percent.toFixed(2),
+        item.color,
+      ])
+    );
+    if (signature === this.leaderboardSignature) return;
+    this.leaderboardSignature = signature;
 
-    top3.forEach((item, idx) => {
-      const avatar = avatarIcons[Math.abs(item.name.charCodeAt(0) || 0) % avatarIcons.length];
-      const rankClass = `rank-${idx + 1}`;
+    const fragment = document.createDocumentFragment();
+    entries.forEach((item, idx) => {
+      const avatar =
+        avatarIcons[
+          Math.abs(item.name.charCodeAt(0) || 0) % avatarIcons.length
+        ];
+      const row = document.createElement("div");
+      row.className = `leaderboard-item ${idx < 3 ? `rank-${idx + 1}` : "rank-other"}`;
 
-      html += `
-        <div class="leaderboard-item ${rankClass}">
-          <div class="lb-rank-badge">${rankBadges[idx]}</div>
-          <div class="lb-avatar" style="border-color: ${item.color};">
-            <span class="avatar-emoji">${avatar}</span>
-          </div>
-          <div class="lb-info">
-            <span class="lb-percent">${item.percent.toFixed(2)}%</span>
-          </div>
-        </div>
-      `;
+      const rankBadge = document.createElement("div");
+      rankBadge.className = "lb-rank-badge";
+      rankBadge.textContent = rankBadges[idx] ?? String(idx + 1);
+
+      const avatarContainer = document.createElement("div");
+      avatarContainer.className = "lb-avatar";
+      avatarContainer.style.borderColor = item.color;
+      const avatarEmoji = document.createElement("span");
+      avatarEmoji.className = "avatar-emoji";
+      avatarEmoji.textContent = avatar;
+      avatarContainer.appendChild(avatarEmoji);
+
+      const info = document.createElement("div");
+      info.className = "lb-info";
+      const name = document.createElement("span");
+      name.className = "lb-name";
+      name.textContent = item.name;
+      name.title = item.name;
+      const percent = document.createElement("span");
+      percent.className = "lb-percent";
+      percent.textContent = `${item.percent.toFixed(2)}%`;
+      info.append(name, percent);
+
+      row.append(rankBadge, avatarContainer, info);
+      fragment.appendChild(row);
     });
 
-    this.leaderboardContainer.innerHTML = html;
+    this.leaderboardContainer.replaceChildren(fragment);
   }
 
   showDeathScreen(killerName: string, isSuicide: boolean, percent: number, kills: number) {
